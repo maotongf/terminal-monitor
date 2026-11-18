@@ -11,7 +11,7 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
   private renderTimer?: ReturnType<typeof setTimeout>;
   private terminalOrder = new Map<string, number>();
   private terminalActivity = new Map<string, number>();
-  private readonly codexTerminalBindings = new Map<string, string>();
+  private readonly codexTerminalBindings = new Map<string, { id: string; confidence: number }>();
   private activeTerminalSubscription: vscode.Disposable;
   private lastPostSnapshot = '';
   private lastRenderedSnapshot = '';
@@ -44,6 +44,8 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
         info?.terminal.show();
       } else if (message?.type === 'focusCodexTask') {
         await this.focusCodexTask(message);
+      } else if (message?.type === 'bindCodexTerminal' && typeof message.taskId === 'string') {
+        await this.chooseCodexTerminal(message.taskId);
       } else if (message?.type === 'ready' || message?.type === 'refresh') {
         this.diagnostic(`Dashboard message: ${message.type}.`);
         this.syncTerminalNames();
@@ -85,11 +87,12 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
     const terminals = this.tasks.getTerminals();
     terminals.forEach((terminal, index) => this.terminalOrder.set(terminal.id, index));
     const codexTasks: CodexTask[] = this.codex.getTasks().map(task => this.bindCodexTask(task));
-    const trackedCliDirectories = new Set(codexTasks
-      .filter(task => task.source === 'cli' && (task.status === 'running' || task.status === 'waiting') && task.cwd)
-      .map(task => task.cwd as string));
+    const trackedCliTerminals = new Set(codexTasks
+      .filter(task => task.source === 'cli' && (task.status === 'running' || task.status === 'waiting') && task.terminalId &&
+        (this.codexTerminalBindings.get(task.id)?.confidence ?? 0) >= 2)
+      .map(task => task.terminalId as string));
     const active: DashboardTask[] = this.tasks.getActiveTasks()
-      .filter(task => !(task.type === 'codex' && task.cwd && trackedCliDirectories.has(task.cwd)))
+      .filter(task => task.type !== 'codex' || !trackedCliTerminals.has(task.terminalId))
       .map(task => this.toDashboard(task));
     const history: DashboardTask[] = this.tasks.getHistory().map(task => this.toDashboard(task));
     const idle: DashboardTask[] = terminals
@@ -108,7 +111,7 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
       this.diagnostic(`Dashboard state queued: active=${active.length}, idle=${idle.length}, recent=${history.length}.`);
     }
     void this.view.webview.postMessage({
-      type: 'state', active, idle, history, codex: codexTasks, codexAvailable: this.codex.isAvailable()
+      type: 'state', active, idle, history, codex: codexTasks, codexAvailable: this.codex.isAvailable(), codexLastSync: this.codex.getLastSync()
     }).then(accepted => {
       if (!accepted) this.diagnostic('Dashboard state was not accepted by the webview.');
     }, error => this.diagnostic(`Dashboard postMessage failed: ${String(error)}`));
@@ -119,15 +122,14 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
   }
 
   private bindCodexTask(task: CodexTask): CodexTask {
-    const boundTerminalId = this.codexTerminalBindings.get(task.id);
-    if (boundTerminalId && this.tasks.getTerminalById(boundTerminalId)) {
-      return { ...task, terminalId: boundTerminalId };
-    }
-    if (boundTerminalId) this.codexTerminalBindings.delete(task.id);
+    const binding = this.codexTerminalBindings.get(task.id);
+    if (binding && !this.tasks.getTerminalById(binding.id)) this.codexTerminalBindings.delete(task.id);
 
     const openMatches = this.tasks.getTerminals().filter(terminal => !task.cwd || samePath(terminal.cwd, task.cwd));
     const nameMatches = openMatches.filter(terminal => terminalNameMatches(task.name, terminal.name));
-    if (nameMatches.length === 1) return this.bindTerminal(task, nameMatches[0].id);
+    if (nameMatches.length === 1) return this.bindTerminal(task, nameMatches[0].id, 2);
+
+    if (binding && this.tasks.getTerminalById(binding.id)) return { ...task, terminalId: binding.id };
 
     const isCliTask = !!task.cwd && (task.source === 'cli' || task.source === 'exec');
     const matching = isCliTask
@@ -137,7 +139,7 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
     const terminalIds = [...new Set(matching.map(candidate => candidate.terminalId))];
 
     let terminalId = terminalIds.length === 1 ? terminalIds[0] : undefined;
-    if (!terminalId && terminalIds.length > 1) {
+    if (!terminalId && terminalIds.length > 1 && task.startTime) {
       const byStartTime = matching
         .filter(candidate => terminalIds.includes(candidate.terminalId))
         .sort((left, right) => Math.abs(left.startTime - task.startTime) - Math.abs(right.startTime - task.startTime));
@@ -153,11 +155,17 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
     }
 
     if (!terminalId) return task;
-    return this.bindTerminal(task, terminalId);
+    const confidence = task.startTime && matching.some(candidate => candidate.terminalId === terminalId &&
+      Math.abs(candidate.startTime - task.startTime) <= 30_000) ? 2 : 1;
+    return this.bindTerminal(task, terminalId, confidence);
   }
 
-  private bindTerminal(task: CodexTask, terminalId: string): CodexTask {
-    this.codexTerminalBindings.set(task.id, terminalId);
+  private bindTerminal(task: CodexTask, terminalId: string, confidence: number): CodexTask {
+    const existing = this.codexTerminalBindings.get(task.id);
+    if (existing && existing.confidence >= confidence && this.tasks.getTerminalById(existing.id)) {
+      return { ...task, terminalId: existing.id };
+    }
+    this.codexTerminalBindings.set(task.id, { id: terminalId, confidence });
     return { ...task, terminalId };
   }
 
@@ -215,6 +223,19 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
     terminal.show();
   }
 
+  private async chooseCodexTerminal(taskId: string): Promise<void> {
+    const task = this.codex.getTasks().find(candidate => candidate.id === taskId);
+    if (!task) return;
+    const choices = this.tasks.getTerminals().map(terminal => ({
+      label: terminal.name, description: terminal.cwd, terminal
+    }));
+    const selected = await vscode.window.showQuickPick(choices, { placeHolder: '选择此 Codex 任务对应的终端' });
+    if (!selected) return;
+    this.codexTerminalBindings.set(taskId, { id: selected.terminal.id, confidence: 3 });
+    selected.terminal.terminal.show(false);
+    this.postState();
+  }
+
   private recordActiveTerminal(terminal?: vscode.Terminal): void {
     if (!terminal) return;
     const info = this.tasks.getTerminalInfo(terminal) ?? this.tasks.registerTerminal(terminal);
@@ -248,7 +269,7 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
 .task{position:relative;display:flex;align-items:center;gap:9px;padding:8px 6px;border-bottom:1px solid var(--line);min-height:48px;cursor:pointer;transition:background .12s ease}.task:last-child{border-bottom:0}.task:hover{background:var(--vscode-list-hoverBackground)}.icon{width:29px;height:29px;flex:0 0 29px;display:flex;align-items:center;justify-content:center;border-radius:9px;background:var(--vscode-toolbar-hoverBackground);font-size:14px}.main{min-width:0;flex:1}.top{display:flex;align-items:center;gap:6px;min-width:0}.name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.sub{font-size:10px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:3px}.right{display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex:0 0 auto}.status{font-size:9px;padding:3px 7px;border-radius:20px;background:var(--vscode-badge-background);color:var(--vscode-badge-foreground);white-space:nowrap}.status.running{color:var(--green)}.status.waiting,.status.quiet{color:var(--yellow)}.status.failed{color:var(--red)}.status.completed{color:var(--blue)}.status.interrupted{color:var(--muted)}.duration{font-size:9px;color:var(--muted);font-variant-numeric:tabular-nums}.empty{color:var(--muted);font-size:11px;text-align:center;padding:13px 8px}.history{opacity:.86}.history .icon{font-size:12px}.codexTask{min-height:52px}.codexStep{color:var(--vscode-foreground)}.task:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:-2px}
 .tooltip{position:fixed;z-index:10;display:none;width:min(310px,calc(100vw - 24px));max-height:260px;overflow:auto;padding:11px 12px;border:1px solid var(--line);border-radius:13px;background:var(--vscode-editorWidget-background);box-shadow:0 8px 26px #0003;pointer-events:auto}.tooltip.show{display:block}.tiphead{display:flex;justify-content:space-between;align-items:center;gap:8px;font-weight:650}.tipmeta{color:var(--muted);font-size:10px;margin-top:6px;overflow-wrap:anywhere}.tiplabel{font-size:10px;color:var(--muted);margin:10px 0 4px}.logs{font-family:var(--vscode-editor-font-family,monospace);font-size:10px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.45;background:var(--vscode-textCodeBlock-background);padding:7px;border-radius:8px;max-height:90px;overflow:auto}.command{font-family:var(--vscode-editor-font-family,monospace);font-size:10px;overflow-wrap:anywhere}
 </style></head><body>
-<div class="header"><div class="brand">Terminal Monitor</div><div class="live"><span class="dot"></span>LIVE</div></div>
+<div class="header"><div class="brand">Terminal Monitor</div><div class="live" id="connectionStatus">连接中</div></div>
 <div class="stats"><div class="stat"><div class="num" id="running">0</div><div class="label">Active</div></div><div class="stat"><div class="num" id="quiet">0</div><div class="label">Quiet</div></div><div class="stat"><div class="num" id="failed">0</div><div class="label">Failed</div></div></div>
 <section class="sectionGroup"><button class="sectionToggle" type="button" data-section-toggle="codex" aria-expanded="true" aria-controls="codexContent"><span class="sectionTitle">Codex <span class="count" id="codexCount">(0)</span></span><span class="chevron">⌄</span></button><div class="sectionContent" id="codexContent"><div class="sectionHint" id="codexHint">Connecting…</div><div id="codex"></div></div></section>
 <section class="sectionGroup"><button class="sectionToggle" type="button" data-section-toggle="active" aria-expanded="true" aria-controls="activeContent"><span class="sectionTitle">Active terminals <span class="count" id="activeCount">(0)</span></span><span class="chevron">⌄</span></button><div class="sectionContent" id="activeContent"><div id="active"></div></div></section>

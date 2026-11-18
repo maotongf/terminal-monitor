@@ -20,10 +20,12 @@ export class AppServerClient {
   private frameBuffer = Buffer.alloc(0);
   private fragmentOpcode?: number;
   private fragments: Buffer[] = [];
+  private fragmentBytes = 0;
+  private disposed = false;
   private nextId = 1;
   private pending = new Map<number, PendingRequest>();
 
-  constructor(private readonly socketPath: string) {}
+  constructor(private readonly socketPath: string, private readonly clientVersion: string) {}
 
   async request<T>(method: string, params: JsonObject): Promise<T> {
     await this.ensureInitialized();
@@ -31,6 +33,7 @@ export class AppServerClient {
   }
 
   dispose(): void {
+    this.disposed = true;
     const socket = this.socket;
     this.socket = undefined;
     this.initialized = false;
@@ -49,7 +52,7 @@ export class AppServerClient {
         clientInfo: {
           name: 'terminal_monitor',
           title: 'Terminal Monitor',
-          version: '1.2.3'
+          version: this.clientVersion
         }
       });
       this.sendMessage({ method: 'initialized', params: {} });
@@ -64,6 +67,7 @@ export class AppServerClient {
   }
 
   private async connect(): Promise<void> {
+    if (this.disposed) throw new Error('Codex App Server client disposed.');
     if (this.socket && this.upgraded) return;
     if (this.opening) return this.opening;
 
@@ -103,6 +107,11 @@ export class AppServerClient {
         if (!this.upgraded) {
           this.handshakeBuffer = Buffer.concat([this.handshakeBuffer, chunk]);
           const boundary = this.handshakeBuffer.indexOf('\r\n\r\n');
+          if ((boundary < 0 && this.handshakeBuffer.length > 16384) || boundary > 16384) {
+            fail(new Error('Codex App Server handshake exceeded the size limit.'));
+            socket.destroy();
+            return;
+          }
           if (boundary < 0) return;
 
           const headers = this.handshakeBuffer.subarray(0, boundary).toString('ascii');
@@ -215,16 +224,18 @@ export class AppServerClient {
         if (this.frameBuffer.length < 10) return;
         const extendedLength = this.frameBuffer.readBigUInt64BE(2);
         if (extendedLength > 8n * 1024n * 1024n) {
-          this.handleDisconnect(this.socket, new Error('Codex App Server frame exceeded the size limit.'));
-          this.socket?.destroy();
+          const socket = this.socket;
+          this.handleDisconnect(socket, new Error('Codex App Server frame exceeded the size limit.'));
+          socket?.destroy();
           return;
         }
         length = Number(extendedLength);
         offset = 10;
       }
       if (length > 8 * 1024 * 1024) {
-        this.handleDisconnect(this.socket, new Error('Codex App Server frame exceeded the size limit.'));
-        this.socket?.destroy();
+        const socket = this.socket;
+        this.handleDisconnect(socket, new Error('Codex App Server frame exceeded the size limit.'));
+        socket?.destroy();
         return;
       }
 
@@ -251,11 +262,19 @@ export class AppServerClient {
 
       if (opcode === 0x0) {
         if (this.fragmentOpcode === undefined) continue;
+        this.fragmentBytes += payload.length;
+        if (this.fragmentBytes > 8 * 1024 * 1024) {
+          const socket = this.socket;
+          this.handleDisconnect(socket, new Error('Codex App Server message exceeded the size limit.'));
+          socket?.destroy();
+          return;
+        }
         this.fragments.push(payload);
         if (final) {
           const complete = Buffer.concat(this.fragments);
           const originalOpcode = this.fragmentOpcode;
           this.fragments = [];
+          this.fragmentBytes = 0;
           this.fragmentOpcode = undefined;
           if (originalOpcode === 0x1) this.handleText(complete);
         }
@@ -264,6 +283,7 @@ export class AppServerClient {
       if (opcode === 0x1 && !final) {
         this.fragmentOpcode = opcode;
         this.fragments = [payload];
+        this.fragmentBytes = payload.length;
       } else if (opcode === 0x1) {
         this.handleText(payload);
       }
@@ -303,6 +323,7 @@ export class AppServerClient {
     this.frameBuffer = Buffer.alloc(0);
     this.fragmentOpcode = undefined;
     this.fragments = [];
+    this.fragmentBytes = 0;
     this.rejectPending(error);
   }
 

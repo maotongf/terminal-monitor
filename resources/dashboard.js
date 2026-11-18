@@ -12,6 +12,7 @@ function esc(value) {
 }
 
 function duration(task) {
+  if (!task.startTime) return '';
   const seconds = Math.max(0, Math.floor(((task.endTime || Date.now()) - task.startTime) / 1000));
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor(seconds % 3600 / 60);
@@ -66,6 +67,10 @@ function codexNode(task) {
   el.dataset.id = task.id;
   el.innerHTML = '<div class="icon">✳</div><div class="main"><div class="top"><span class="name">' + esc(task.name || 'Codex') + '</span></div><div class="sub codexStep">' + esc(task.currentStep || sourceLabel(task.source)) + (task.cwd ? ' · ' + esc(shortPath(task.cwd)) : '') + '</div></div><div class="right"><span class="status ' + esc(task.status) + '">' + label(task.status) + '</span><span class="duration" data-counting="' + (task.status === 'running' || task.status === 'waiting' ? 'true' : 'false') + '" data-start="' + task.startTime + '" data-end="' + (task.endTime || '') + '">' + duration(task) + '</span></div>';
   el.addEventListener('click', () => vscode.postMessage({ type: 'focusCodexTask', terminalId: task.terminalId, source: task.source, cwd: task.cwd, name: task.name, status: task.status }));
+  el.addEventListener('contextmenu', event => {
+    event.preventDefault();
+    vscode.postMessage({ type: 'bindCodexTerminal', taskId: task.id });
+  });
   attachTooltip(el, task);
   return el;
 }
@@ -84,7 +89,7 @@ function showTooltip(task, el) {
   const isCodex = typeof task.source === 'string';
   const title = isCodex ? task.name : (task.terminalName || task.name);
   const statusText = ({ running: '进行中', waiting: '等待处理', quiet: '暂无输出', idle: '空闲', completed: '已完成', failed: '失败', interrupted: '已中断', unknown: '未知' })[task.status] || task.status;
-  const elapsed = task.status === 'idle' || task.status === 'unknown' ? '' : ' · ' + esc(duration(task));
+  const elapsed = task.status === 'idle' || task.status === 'unknown' || !task.startTime ? '' : ' · ' + esc(duration(task));
   const header = '<div class="tiphead"><span style="overflow-wrap:anywhere">' + esc(title) + '</span></div>';
   const status = '<div class="tipmeta">' + esc(statusText) + elapsed + '</div>';
   let body = '';
@@ -92,6 +97,7 @@ function showTooltip(task, el) {
     // These fields come from the Codex thread and turn response, not terminal output.
     if (task.currentStep) body += '<div style="margin-top:8px">' + esc(task.currentStep) + '</div>';
     body += '<div class="tipmeta">Codex' + (task.updatedAt ? ' · 更新于 ' + esc(timeAgo(task.updatedAt)) : '') + '</div>';
+    body += '<div class="tipmeta">右键任务可更换关联终端</div>';
   } else {
     const lines = (task.recentOutput || []).filter(line => String(line).trim()).slice(-3);
     if (lines.length) body += '<div class="logs" style="margin-top:8px">' + esc(lines.join('\n').slice(-600)) + '</div>';
@@ -160,6 +166,8 @@ function render() {
   const idle = state.idle || [];
   const history = state.history || [];
   const workingCodex = codex.filter(task => task.status === 'running' || task.status === 'waiting');
+  $('connectionStatus').textContent = state.codexAvailable ? '已连接' : 'Codex 未连接';
+  $('connectionStatus').style.color = state.codexAvailable ? 'var(--green)' : 'var(--yellow)';
 
   $('running').textContent = active.filter(task => task.status === 'running').length + workingCodex.length;
   $('quiet').textContent = active.filter(task => task.status === 'quiet').length;
@@ -171,7 +179,7 @@ function render() {
   if (!codex.length) $('codex').innerHTML = '<div class="empty">No Codex tasks</div>';
   $('codexHint').textContent = state.codexAvailable
     ? (workingCodex.length ? 'Live from Codex' : 'No active Codex work')
-    : 'Codex status unavailable';
+    : (codex.length ? '连接中断 · ' + (state.codexLastSync ? '上次同步 ' + timeAgo(state.codexLastSync) : '显示上次数据') : 'Codex 未连接');
 
   $('active').replaceChildren();
   $('idle').replaceChildren();
@@ -217,6 +225,7 @@ $('tooltip').addEventListener('mouseleave', scheduleHideTooltip);
 setInterval(() => {
   document.querySelectorAll('.duration[data-start][data-counting="true"]').forEach(element => {
     const start = Number(element.dataset.start);
+    if (!start) { element.textContent = ''; return; }
     const end = Number(element.dataset.end) || Date.now();
     const seconds = Math.max(0, Math.floor((end - start) / 1000));
     const hours = Math.floor(seconds / 3600);

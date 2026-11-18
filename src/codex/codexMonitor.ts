@@ -40,14 +40,18 @@ export class CodexMonitor implements vscode.Disposable {
   private timer?: ReturnType<typeof setInterval>;
   private polling = false;
   private available = false;
+  private lastSync?: number;
   private tasks: CodexTask[] = [];
   private lastSnapshot = '';
   private lastConnectionState: 'connected' | 'unavailable' | undefined;
   private onChange: () => void = () => undefined;
 
-  constructor(private readonly diagnostic: (message: string) => void = () => undefined) {
+  constructor(
+    private readonly diagnostic: (message: string) => void = () => undefined,
+    clientVersion = 'unknown'
+  ) {
     const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
-    this.client = new AppServerClient(path.join(codexHome, 'app-server-control', 'app-server-control.sock'));
+    this.client = new AppServerClient(path.join(codexHome, 'app-server-control', 'app-server-control.sock'), clientVersion);
   }
 
   start(onChange: () => void): void {
@@ -58,6 +62,7 @@ export class CodexMonitor implements vscode.Disposable {
 
   getTasks(): CodexTask[] { return this.tasks; }
   isAvailable(): boolean { return this.available; }
+  getLastSync(): number | undefined { return this.lastSync; }
 
   private async poll(): Promise<void> {
     if (this.polling) return;
@@ -87,12 +92,13 @@ export class CodexMonitor implements vscode.Disposable {
       });
 
       this.available = true;
+      this.lastSync = Date.now();
       this.reportConnectionState('connected');
       this.updateTasks(filtered);
     } catch {
       this.available = false;
       this.reportConnectionState('unavailable');
-      this.updateTasks([]);
+      this.onChange();
     } finally {
       this.polling = false;
     }
@@ -118,7 +124,7 @@ export class CodexMonitor implements vscode.Disposable {
     const updatedAt = toTimestamp(thread.updatedAt) || now;
     const flags = thread.status?.activeFlags ?? [];
     const status = taskStatus(thread.status?.type, turn?.status, flags);
-    const startTime = toTimestamp(turn?.startedAt) || updatedAt || toTimestamp(thread.createdAt) || now;
+    const startTime = toTimestamp(turn?.startedAt);
     const endTime = toTimestamp(turn?.completedAt) || (status !== 'running' && status !== 'waiting' ? updatedAt : undefined);
     const name = thread.name?.trim() || thread.preview?.trim() || fallbackName(thread.source);
 
@@ -128,6 +134,7 @@ export class CodexMonitor implements vscode.Disposable {
       cwd: thread.cwd || undefined,
       source: thread.source || 'codex',
       status,
+      waitingReason: flags.includes('waitingOnApproval') ? 'approval' : flags.includes('waitingOnUserInput') ? 'input' : flags.includes('waitingOnExternalTool') ? 'tool' : undefined,
       startTime,
       endTime,
       updatedAt,
@@ -182,8 +189,8 @@ function currentStep(status: CodexTaskStatus, flags: string[], turn?: TurnRow): 
   if (status !== 'running') return undefined;
 
   const items = turn?.items ?? [];
-  const last = items.length ? items[items.length - 1] : undefined;
-  const item = last && 'item' in last ? last.item : last;
+  const normalized = items.map(entry => 'item' in entry ? entry.item : entry as TurnItem).filter((item): item is TurnItem => !!item);
+  const item = [...normalized].reverse().find(entry => entry.status === 'inProgress' || entry.status === 'running');
   switch (item?.type) {
     case 'commandExecution': return '正在运行命令';
     case 'fileChange': return '正在修改文件';

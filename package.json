@@ -2,7 +2,7 @@
   "name": "terminal-monitor",
   "displayName": "Terminal Monitor",
   "description": "A compact, real-time monitor for VS Code integrated terminals and AI coding agents.",
-  "version": "1.2.6",
+  "version": "1.2.8",
   "publisher": "local-test-publisher",
   "license": "MIT",
   "engines": { "vscode": "^1.93.0" },
@@ -53,9 +53,12 @@
     }
   },
   "scripts": {
+    "vscode:prepublish": "npm run clean && npm run compile",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "compile": "tsc -p ./",
+    "test": "npm run compile && node --test test/*.cjs",
     "watch": "tsc -watch -p ./",
-    "package": "vsce package"
+    "package": "vsce package --allow-missing-repository --no-rewrite-relative-links"
   },
   "devDependencies": {
     "@types/vscode": "^1.93.0",

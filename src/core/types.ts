@@ -57,6 +57,7 @@ export interface CodexTask {
   cwd?: string;
   source: string;
   status: CodexTaskStatus;
+  waitingReason?: 'approval' | 'input' | 'tool';
   startTime: number;
   endTime?: number;
   updatedAt: number;

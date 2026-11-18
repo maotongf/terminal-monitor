@@ -43,7 +43,7 @@ npx vsce package
 Install the generated `.vsix` in VS Code using **Extensions → Install from VSIX...**, then click the Terminal Monitor icon in the Activity Bar. To install from a terminal, pass the generated file to:
 
 ```bash
-code --install-extension terminal-monitor-1.2.6.vsix
+code --install-extension terminal-monitor-1.2.8.vsix
 ```
 
 For Remote SSH, install the extension in the remote extension host if you want it to monitor terminals running on the remote machine.
@@ -60,6 +60,8 @@ For Remote SSH, install the extension in the remote extension host if you want i
 Codex tasks appear in the **Codex** section with their App Server status and current high-level step. Terminal tasks appear in the sections below. Click section headers to collapse or expand a whole group.
 
 Click a Codex task to focus its matching terminal. Terminal Monitor remembers the match for that task, preferring terminal names containing the task title and then the task folder. If the task has no folder, it focuses the most recently active integrated terminal. If no terminal is available, it opens one in the task folder or current workspace.
+
+Right-click a Codex task to choose its associated terminal manually. The chosen terminal is used while it remains open.
 
 No special command wrapper is required.
 
@@ -113,3 +115,7 @@ The extension does not start, stop, inject commands into, or take control of ter
 ## License
 
 MIT. See `LICENSE`.
+
+## Improvement plan
+
+See the [phased fix and design plan](docs/FIX-PLAN.md) for status colors, priorities, acceptance criteria, and progress. The [1.2.6 review](docs/REVIEW-1.2.6.md) records the original findings.
