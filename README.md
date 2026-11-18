@@ -28,6 +28,14 @@ A compact VS Code extension for monitoring Codex tasks and integrated terminal c
 
 The extension starts monitoring when VS Code finishes starting. If terminals still do not appear, run **Terminal Monitor: Refresh** and check **View → Output → Terminal Monitor** for the extension host and terminal counts.
 
+## Extension host and Remote SSH
+
+Terminal Monitor runs in the VS Code extension host for the open folder. In a local window, that is your computer; in a Remote SSH window, it is the remote machine. The Output channel reports `local` or the remote host name when monitoring starts, and reports whether the Codex App Server connection is available.
+
+Codex status is read from a Unix socket on that same machine: `$CODEX_HOME/app-server-control/app-server-control.sock`, or `~/.codex/app-server-control/app-server-control.sock` when `CODEX_HOME` is unset. A local Codex socket is not forwarded automatically into a Remote SSH host. To monitor Codex in Remote SSH, Codex must provide its App Server socket on the remote machine. Terminal monitoring itself can still work while the Codex connection is unavailable.
+
+The extension has been checked in local macOS VS Code. Remote SSH end-to-end, Windows, Linux desktop, and VS Code Insiders have not been validated; the VS Code engine version in `package.json` is a minimum API requirement, not a compatibility certification.
+
 ## Build and install
 
 Clone the repository and build the extension:
@@ -47,7 +55,7 @@ Install the generated `.vsix` in VS Code using **Extensions → Install from VSI
 code --install-extension terminal-monitor-1.8.0.vsix
 ```
 
-For Remote SSH, install the extension in the remote extension host if you want it to monitor terminals running on the remote machine.
+For Remote SSH, install the extension in the remote extension host to monitor remote terminals. Codex status also requires the Codex App Server socket to be available on that remote host.
 
 ## Use
 
