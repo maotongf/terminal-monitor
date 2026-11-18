@@ -107,6 +107,8 @@ function showTooltip(task, el) {
   hideTimer = null;
   activeTooltipTask = task;
   const tip = $('tooltip');
+  const scrollTop = tip.scrollTop;
+  const selection = captureTooltipSelection(tip);
   const rect = el.getBoundingClientRect();
   const isCodex = typeof task.source === 'string';
   const title = isCodex ? task.name : (task.terminalName || task.name);
@@ -128,6 +130,8 @@ function showTooltip(task, el) {
   }
   const folder = task.cwd ? '<div class="tipmeta" title="' + esc(task.cwd) + '">' + esc(shortPath(task.cwd)) + '</div>' : '';
   tip.innerHTML = header + status + body + folder;
+  tip.scrollTop = scrollTop;
+  if (selection) restoreTooltipSelection(tip, selection);
   tip.classList.add('show');
   const width = Math.min(310, window.innerWidth - 24);
   let left = Math.min(rect.left, window.innerWidth - width - 8);
@@ -136,6 +140,29 @@ function showTooltip(task, el) {
   if (top + tip.offsetHeight > window.innerHeight) top = Math.max(8, rect.top - tip.offsetHeight - 5);
   tip.style.left = left + 'px';
   tip.style.top = top + 'px';
+}
+
+function captureTooltipSelection(root) {
+  const selection = window.getSelection?.();
+  if (!selection?.rangeCount || !root.contains(selection.anchorNode) || !root.contains(selection.focusNode)) return undefined;
+  const offset = (node, position) => {
+    const range=document.createRange(); range.selectNodeContents(root); range.setEnd(node,position); return range.toString().length;
+  };
+  try { return { anchor:offset(selection.anchorNode,selection.anchorOffset), focus:offset(selection.focusNode,selection.focusOffset) }; }
+  catch { return undefined; }
+}
+
+function restoreTooltipSelection(root, saved) {
+  const position = target => {
+    const walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT); let node; let remaining=target; let last;
+    while ((node=walker.nextNode())) { last=node; if (remaining<=node.textContent.length) return [node,remaining]; remaining-=node.textContent.length; }
+    return last ? [last,last.textContent.length] : [root,0];
+  };
+  try {
+    const selection=window.getSelection?.(); if(!selection)return;
+    const [anchorNode,anchorOffset]=position(saved.anchor); const [focusNode,focusOffset]=position(saved.focus);
+    selection.setBaseAndExtent(anchorNode,anchorOffset,focusNode,focusOffset);
+  } catch { /* The selected text may have disappeared in the updated task output. */ }
 }
 
 function scheduleHideTooltip() {
@@ -252,7 +279,7 @@ window.addEventListener('error', event => vscode.postMessage({ type: 'webviewErr
 window.addEventListener('unhandledrejection', event => vscode.postMessage({ type: 'webviewError', message: String(event.reason || 'unhandled rejection') }));
 window.addEventListener('message', event => {
   if (event.data?.type !== 'state') return;
-  const snapshot = JSON.stringify(event.data);
+  const snapshot = JSON.stringify({ ...event.data, codexLastSync: event.data.codexAvailable ? undefined : event.data.codexLastSync });
   if (snapshot === lastStateSnapshot) return;
   lastStateSnapshot = snapshot;
   state = event.data;

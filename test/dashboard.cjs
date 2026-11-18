@@ -36,6 +36,9 @@ test('dashboard counts, keyed rows, keyboard activation and collapse state', () 
   const row=els.active.children[0]; assert.equal(row.dataset.id,'a1'); assert.equal(row.getAttribute('role'),'button');
   const key=row.listeners.keydown[0]; let prevented=false; key({key:'Enter',preventDefault(){prevented=true}}); assert.equal(prevented,true); assert.equal(messages.at(-1).terminalId,'t1');
   state.active[0]={...state.active[0],status:'running',recentOutput:['new']}; winEvents.message({data:state}); assert.equal(els.active.children[0],row);
+  const renderCount=messages.filter(x=>x.type==='rendered').length;
+  winEvents.message({data:{...state,codexLastSync:state.codexLastSync+10000}});
+  assert.equal(messages.filter(x=>x.type==='rendered').length,renderCount);
   assert.equal(els.history.children.length,5); assert.equal(els.historyMore.hidden,false);
   els.historyMore.click(); assert.equal(els.history.children.length,6);
   sections.find(x=>x.dataset.sectionToggle==='active').listeners.click[0](); assert.ok(saved.value.collapsedSections.includes('active'));
