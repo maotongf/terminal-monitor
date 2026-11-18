@@ -4,7 +4,6 @@
 test/**
 src/**
 node_modules/**
-docs/REVIEW-1.2.6.md
 **/*.ts
 **/*.map
 .gitignore
