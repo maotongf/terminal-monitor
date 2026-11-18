@@ -53,7 +53,8 @@ export class AppServerClient {
           name: 'terminal_monitor',
           title: 'Terminal Monitor',
           version: this.clientVersion
-        }
+        },
+        capabilities: { experimentalApi: true }
       });
       this.sendMessage({ method: 'initialized', params: {} });
       this.initialized = true;

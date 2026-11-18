@@ -28,9 +28,9 @@ test('dashboard counts, keyed rows, keyboard activation and collapse state', () 
   const winEvents={}; const messages=[]; const saved={};
   const document={getElementById:id=>els[id],createElement:()=>new Element(),querySelectorAll:q=>q==='[data-section-toggle]'?sections:q==='.task'?['codex','active','idle','history'].flatMap(id=>els[id].children):[],querySelector:q=>q==='.task:hover'?null:q.startsWith('[data-section-toggle=')?sections.find(x=>q.includes(x.dataset.sectionToggle)):null};
   const context={acquireVsCodeApi:()=>({postMessage:m=>messages.push(m),getState:()=>saved.value,setState:v=>saved.value=v}),document,window:{innerWidth:400,innerHeight:600,addEventListener:(t,f)=>winEvents[t]=f},setInterval:()=>1,clearInterval(){},setTimeout:()=>1,clearTimeout(){},Date,console};
-  vm.createContext(context); vm.runInContext(fs.readFileSync('resources/dashboard.js','utf8'),context);
+  vm.createContext(context); vm.runInContext(fs.readFileSync('resources/copy.zh-CN.js','utf8'),context); vm.runInContext(fs.readFileSync('resources/dashboard.js','utf8'),context);
   const failedAt=Date.now();
-  const state={type:'state',codexAvailable:true,codexLastSync:Date.now(),codexScope:'当前工作区',paginationIncomplete:false,codex:[{id:'c1',name:'批准任务',source:'vscode',status:'waiting',waitingReason:'approval',startTime:Date.now()},{id:'c2',name:'命令行任务',source:'cli',status:'failed',terminalId:'closed',terminalBindingConfidence:2,startTime:failedAt},{id:'c3',name:'独立失败',source:'cli',status:'failed',startTime:failedAt}],active:[{id:'a1',terminalId:'t1',terminalName:'zsh',name:'Task',type:'shell',status:'quiet',startTime:Date.now(),recentOutput:[]}],idle:[],history:Array.from({length:6},(_,i)=>({id:`h${i}`,terminalId:'closed',terminalName:'old',name:'Task',type:'shell',status:i?'completed':'failed',startTime:failedAt,recentOutput:[]}))};
+  const state={type:'state',codexAvailable:true,codexLastSync:Date.now(),codexScope:'当前工作区',paginationIncomplete:false,codex:[{id:'c1',name:'批准任务',source:'vscode',status:'waiting',waitingReason:'approval',startTime:Date.now()},{id:'c2',name:'命令行任务',source:'cli',status:'failed',terminalId:'closed',terminalBindingConfidence:2,startTime:failedAt},{id:'c3',name:'独立失败',source:'cli',status:'failed',startTime:failedAt}],active:[{id:'a1',terminalId:'t1',terminalName:'zsh',name:'Task',type:'shell',status:'quiet',startTime:Date.now(),recentOutput:[]}],idle:[],history:Array.from({length:6},(_,i)=>({id:`h${i}`,terminalId:'closed',terminalName:'old',name:'Task',type:'shell',status:i?'completed':'failed',startTime:failedAt,recentOutput:[],cwd:'/workspace/demo',terminalOpen:false}))};
   winEvents.message({data:state});
   assert.equal(els.running.textContent,'1'); assert.equal(els.waiting.textContent,'1'); assert.equal(els.failed.textContent,'2');
   assert.equal(els.codexHint.textContent,'当前工作区 · 实时状态');
@@ -44,6 +44,9 @@ test('dashboard counts, keyed rows, keyboard activation and collapse state', () 
   winEvents.message({data:{...state,codexScope:'全部会话',paginationIncomplete:true}});
   assert.equal(els.codexHint.textContent,'全部会话 · 实时状态 · 会话列表未完整加载');
   assert.equal(els.history.children.length,5); assert.equal(els.historyMore.hidden,false);
+  const closedTask=els.history.children[0]; assert.match(closedTask.innerHTML,/原终端已关闭/);
+  closedTask.click(); assert.equal(messages.at(-1).taskId,'h0');
+  closedTask.listeners.focus[0](); assert.match(els.tooltip.innerHTML,/点击后会在原目录打开新终端/);
   els.historyMore.click(); assert.equal(els.history.children.length,6);
   sections.find(x=>x.dataset.sectionToggle==='active').listeners.click[0](); assert.ok(saved.value.collapsedSections.includes('active'));
 });
@@ -55,7 +58,7 @@ test('Codex hover shows escaped final reply and requests missing reply on demand
   const winEvents={}; const messages=[];
   const document={getElementById:id=>els[id],createElement:()=>new Element(),querySelectorAll:q=>q==='[data-section-toggle]'?sections:q==='.task'?['codex','active','idle','history'].flatMap(id=>els[id].children):[],querySelector:q=>q==='.task:hover'?null:q.startsWith('[data-section-toggle=')?sections.find(x=>q.includes(x.dataset.sectionToggle)):null};
   const context={acquireVsCodeApi:()=>({postMessage:m=>messages.push(m),getState:()=>({}),setState(){}}),document,window:{innerWidth:400,innerHeight:600,addEventListener:(t,f)=>winEvents[t]=f},setInterval:()=>1,clearInterval(){},setTimeout:()=>1,clearTimeout(){},Date,console};
-  vm.createContext(context); vm.runInContext(fs.readFileSync('resources/dashboard.js','utf8'),context);
+  vm.createContext(context); vm.runInContext(fs.readFileSync('resources/copy.zh-CN.js','utf8'),context); vm.runInContext(fs.readFileSync('resources/dashboard.js','utf8'),context);
   winEvents.message({data:{type:'state',codexAvailable:true,codexLastSync:Date.now(),codex:[
     {id:'reply',turnId:'turn-1',name:'Completed task',source:'vscode',status:'completed',startTime:1,recentReply:'Done <safely>'},
     {id:'pending',turnId:'turn-2',name:'Finished task',source:'cli',status:'completed',startTime:Date.now()},
@@ -63,8 +66,10 @@ test('Codex hover shows escaped final reply and requests missing reply on demand
   ],active:[],idle:[],history:[]}});
 
   const withReply=els.codex.children.find(row=>row.dataset.id==='reply');
+  assert.doesNotMatch(withReply.innerHTML,/任务已完成|任务执行失败/);
   withReply.listeners.focus[0]();
   assert.match(els.tooltip.innerHTML,/最近回复/);
+  assert.doesNotMatch(els.tooltip.innerHTML,/任务已完成|任务执行失败/);
   assert.match(els.tooltip.innerHTML,/Done &lt;safely&gt;/);
   const withoutReply=els.codex.children.find(row=>row.dataset.id==='pending');
   withoutReply.listeners.focus[0]();

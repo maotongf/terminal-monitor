@@ -1,4 +1,5 @@
 const vscode = acquireVsCodeApi();
+const copy = window.terminalMonitorCopy;
 let state = { active: [], idle: [], history: [], codex: [], codexAvailable: false, codexLastSync: undefined };
 let showTimer = null;
 let hideTimer = null;
@@ -9,6 +10,17 @@ const codexReplyRequestedAt = new Map();
 const collapsedSections = new Set(vscode.getState()?.collapsedSections || []);
 let showAllHistory = false;
 const $ = id => document.getElementById(id);
+const format = (template, values) => template.replace(/\{(\w+)\}/g, (_match, key) => String(values[key] ?? ''));
+
+for (const element of Array.from(document.querySelectorAll('[data-copy]') || [])) {
+  const key = element.dataset.copy;
+  const value = copy.section[key] ?? copy.ui[key];
+  if (value) element.textContent = value;
+}
+if ($('connectionStatus')) $('connectionStatus').textContent = copy.ui.connecting;
+if ($('codexHint')) $('codexHint').textContent = copy.ui.connecting + '…';
+if ($('failedLabel')) $('failedLabel').title = copy.ui.failureScope;
+if ($('summary')) $('summary').textContent = copy.ui.waitingForTerminals;
 
 function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -20,7 +32,7 @@ function duration(task) {
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor(seconds % 3600 / 60);
   const remainder = seconds % 60;
-  return hours ? `${hours}小时${minutes}分` : `${minutes}分${String(remainder).padStart(2, '0')}秒`;
+  return hours ? format(copy.duration.hours, { hours, minutes }) : format(copy.duration.minutes, { minutes, seconds: String(remainder).padStart(2, '0') });
 }
 
 function icon(task) {
@@ -28,12 +40,28 @@ function icon(task) {
 }
 
 function label(status, task) {
-  if (status === 'waiting' && task?.waitingReason === 'tool') return '等待工具';
-  return ({ running: '进行中', waiting: '待你处理', quiet: '暂无输出', idle: '空闲', completed: '已完成', failed: '失败', interrupted: '已中断', unknown: '未知' })[status] || '未知';
+  if (status === 'waiting' && task?.waitingReason === 'tool') return copy.status.waitingTool;
+  return copy.status[status] || copy.status.unknown;
 }
 
 function sourceLabel(source) {
-  return ({ vscode: 'VS Code', cli: '命令行', exec: '命令行' })[source] || 'Codex';
+  return copy.source[source] || copy.source.other;
+}
+
+function displayCodexStep(task) {
+  if (task.status !== 'running' && task.status !== 'waiting') return '';
+  if (!task.currentStep || task.currentStep === 'Codex 正在处理任务') return '';
+  return task.currentStep;
+}
+
+function codexBindingLabel(task) {
+  if (task.terminalBindingReason === 'manual') return copy.tooltip.bindingManual;
+  if (task.terminalBindingReason === 'titleAndFolder') return copy.tooltip.bindingTitle;
+  if (task.terminalBindingReason === 'relatedTask') {
+    return task.terminalBindingConfidence >= 2 ? copy.tooltip.bindingTask : copy.tooltip.bindingFolder;
+  }
+  if (task.terminalBindingReason === 'recentActivity') return copy.tooltip.bindingRecent;
+  return '';
 }
 
 function taskNode(task, history = false, el) {
@@ -46,9 +74,11 @@ function taskNode(task, history = false, el) {
   el.dataset.id = task.id;
   el._task = task;
   const stateClass = task.status === 'waiting' && task.waitingReason === 'tool' ? 'waitingTool' : task.status;
-  el.innerHTML = '<div class="icon">' + icon(task) + '</div><div class="main"><div class="top"><span class="name">' + esc(task.terminalName || task.name) + '</span></div><div class="sub">' + esc(task.cwd ? shortPath(task.cwd) : ('终端 · ' + (task.name || 'Shell'))) + '</div></div><div class="right"><span class="status ' + esc(stateClass) + '">' + label(task.status, task) + '</span><span class="duration" data-counting="' + (task.status === 'idle' || task.status === 'unknown' ? 'false' : 'true') + '" data-start="' + task.startTime + '" data-end="' + (task.endTime || '') + '">' + (task.status === 'idle' || task.status === 'unknown' ? '' : duration(task)) + '</span></div>';
+  const subtitle = task.cwd ? shortPath(task.cwd) : format(copy.tooltip.terminal, { name: task.name || copy.tooltip.shell });
+  const closedHint = history && task.terminalOpen === false ? ` · ${copy.tooltip.closedInList}` : '';
+  el.innerHTML = '<div class="icon">' + icon(task) + '</div><div class="main"><div class="top"><span class="name">' + esc(task.terminalName || task.name) + '</span></div><div class="sub">' + esc(subtitle + closedHint) + '</div></div><div class="right"><span class="status ' + esc(stateClass) + '">' + label(task.status, task) + '</span><span class="duration" data-counting="' + (task.status === 'idle' || task.status === 'unknown' ? 'false' : 'true') + '" data-start="' + task.startTime + '" data-end="' + (task.endTime || '') + '">' + (task.status === 'idle' || task.status === 'unknown' ? '' : duration(task)) + '</span></div>';
   if (isNew) {
-    el.addEventListener('click', () => vscode.postMessage({ type: 'focusTerminal', terminalId: el._task.terminalId }));
+    el.addEventListener('click', () => vscode.postMessage({ type: 'focusTerminal', terminalId: el._task.terminalId, taskId: el._task.id }));
     el.addEventListener('keydown', event => activateByKeyboard(event, el));
     attachTooltip(el);
   }
@@ -107,7 +137,8 @@ function codexNode(task, el) {
   el.dataset.id = task.id;
   el._task = task;
   const stateClass = task.status === 'waiting' && task.waitingReason === 'tool' ? 'waitingTool' : task.status;
-  el.innerHTML = '<div class="icon">✳</div><div class="main"><div class="top"><span class="name">' + esc(task.name || 'Codex') + '</span></div><div class="sub codexStep">' + esc(task.currentStep || sourceLabel(task.source)) + (task.cwd ? ' · ' + esc(shortPath(task.cwd)) : '') + '</div></div><div class="right"><span class="status ' + esc(stateClass) + '">' + label(task.status, task) + '</span><span class="duration" data-counting="' + (task.status === 'running' || task.status === 'waiting' ? 'true' : 'false') + '" data-start="' + task.startTime + '" data-end="' + (task.endTime || '') + '">' + duration(task) + '</span></div>';
+  const subtitle = [displayCodexStep(task), task.cwd ? shortPath(task.cwd) : ''].filter(Boolean).join(' · ') || sourceLabel(task.source);
+  el.innerHTML = '<div class="icon">✳</div><div class="main"><div class="top"><span class="name">' + esc(task.name || 'Codex') + '</span></div><div class="sub codexStep">' + esc(subtitle) + '</div></div><div class="right"><span class="status ' + esc(stateClass) + '">' + label(task.status, task) + '</span><span class="duration" data-counting="' + (task.status === 'running' || task.status === 'waiting' ? 'true' : 'false') + '" data-start="' + task.startTime + '" data-end="' + (task.endTime || '') + '">' + duration(task) + '</span></div>';
   if (isNew) {
     el.addEventListener('click', () => { const t=el._task; vscode.postMessage({ type: 'focusCodexTask', terminalId: t.terminalId, source: t.source, cwd: t.cwd, name: t.name, status: t.status }); });
     el.addEventListener('keydown', event => activateByKeyboard(event, el));
@@ -140,15 +171,23 @@ function showTooltip(task, el) {
   let body = '';
   if (isCodex) {
     // These fields come from the Codex thread and turn response, not terminal output.
-    if (task.currentStep) body += '<div style="margin-top:8px">' + esc(task.currentStep) + '</div>';
-    if (task.recentReply) body += '<div class="tiplabel">最近回复</div><div class="logs reply">' + esc(task.recentReply) + '</div>';
-    body += '<div class="tipmeta">Codex' + (task.updatedAt ? ' · 更新于 <span class="tipUpdated" data-updated="' + task.updatedAt + '">' + esc(timeAgo(task.updatedAt)) + '</span>' : '') + '</div>';
-    body += '<div class="tipmeta">右键任务可更换关联终端</div>';
+    const step = displayCodexStep(task);
+    if (step) body += '<div style="margin-top:8px">' + esc(step) + '</div>';
+    if (task.recentReply) body += '<div class="tiplabel">' + esc(copy.tooltip.recentReply) + '</div><div class="logs reply">' + esc(task.recentReply) + '</div>';
+    body += '<div class="tipmeta">' + (task.updatedAt ? esc(copy.tooltip.codexUpdated.split('{time}')[0]) + '<span class="tipUpdated" data-updated="' + task.updatedAt + '">' + esc(timeAgo(task.updatedAt)) + '</span>' : esc(copy.source.other)) + '</div>';
+    const bindingLabel = codexBindingLabel(task);
+    body += '<div class="tipmeta">' + (bindingLabel ? esc(bindingLabel) + ' · ' : '') + esc(copy.tooltip.changeTerminal) + '</div>';
   } else {
+    if (task.terminalOpen === false) {
+      const closedText = task.cwd
+        ? copy.tooltip.closedWithCwd
+        : copy.tooltip.closedNoCwd;
+      body += '<div class="tipmeta" style="margin-top:8px">' + esc(closedText) + '</div>';
+    }
     const lines = (task.recentOutput || []).filter(line => String(line).trim()).slice(-3);
     if (lines.length) body += '<div class="logs" style="margin-top:8px">' + esc(lines.join('\n').slice(-600)) + '</div>';
     else if (task.command) body += '<div class="command" style="margin-top:8px">' + esc(task.command.slice(0, 240)) + '</div>';
-    if (task.exitCode !== undefined && task.exitCode !== 0) body += '<div class="tipmeta">退出码 ' + esc(task.exitCode) + '</div>';
+  if (task.exitCode !== undefined && task.exitCode !== 0) body += '<div class="tipmeta">' + esc(format(copy.tooltip.exitCode, { code: task.exitCode })) + '</div>';
   }
   const folder = task.cwd ? '<div class="tipmeta" title="' + esc(task.cwd) + '">' + esc(shortPath(task.cwd)) + '</div>' : '';
   tip.innerHTML = header + status + body + folder;
@@ -209,20 +248,20 @@ function hideTooltip() {
 
 function timeAgo(timestamp) {
   const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
-  if (seconds < 60) return `${seconds} 秒前`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小时前`;
-  return `${Math.floor(seconds / 86400)} 天前`;
+  if (seconds < 60) return format(copy.time.secondsAgo, { count: seconds });
+  if (seconds < 3600) return format(copy.time.minutesAgo, { count: Math.floor(seconds / 60) });
+  if (seconds < 86400) return format(copy.time.hoursAgo, { count: Math.floor(seconds / 3600) });
+  return format(copy.time.daysAgo, { count: Math.floor(seconds / 86400) });
 }
 
 function updateConnectionStatus() {
   const connection = $('connectionStatus');
   if (!connection) return;
   connection.textContent = state.codexAvailable
-    ? '已连接'
+    ? copy.ui.connected
     : ((state.codex || []).length
-      ? '连接中断 · ' + (state.codexLastSync ? '上次同步 ' + timeAgo(state.codexLastSync) : '显示上次数据')
-      : 'Codex 未连接');
+      ? `${copy.ui.disconnected} · ${state.codexLastSync ? format(copy.ui.showingLastSync, { time: timeAgo(state.codexLastSync) }) : copy.ui.showingCached}`
+      : copy.ui.codexUnavailable);
   connection.style.color = state.codexAvailable ? 'var(--green)' : 'var(--yellow)';
 }
 
@@ -277,12 +316,12 @@ function render() {
 
   updateList('codex', codex, codexNode);
   $('codexCount').textContent = `(${codex.length})`;
-  if (!codex.length) $('codex').innerHTML = '<div class="empty">暂无 Codex 任务</div>';
+  if (!codex.length) $('codex').innerHTML = '<div class="empty">' + esc(copy.ui.noCodex) + '</div>';
   const codexStatusHint = state.codexAvailable
-    ? (workingCodex.length ? '实时状态' : '暂无活动任务')
-    : (codex.length ? '连接中断 · ' + (state.codexLastSync ? '上次同步 ' + timeAgo(state.codexLastSync) : '显示上次数据') : 'Codex 未连接');
-  $('codexHint').textContent = (state.codexScope || '当前工作区') + ' · ' + codexStatusHint +
-    (state.paginationIncomplete ? ' · 会话列表未完整加载' : '');
+    ? (workingCodex.length ? copy.ui.live : copy.ui.noActiveTasks)
+    : (codex.length ? `${copy.ui.codexDisconnected} · ${state.codexLastSync ? format(copy.ui.showingLastSync, { time: timeAgo(state.codexLastSync) }) : copy.ui.showingCached}` : copy.ui.codexUnavailable);
+  $('codexHint').textContent = (state.codexScope || copy.ui.codexScope) + ' · ' + codexStatusHint +
+    (state.paginationIncomplete ? ' · ' + copy.ui.incomplete : '');
 
   updateList('active', active, (task, node) => taskNode(task, false, node));
   updateList('idle', idle, (task, node) => taskNode(task, false, node));
@@ -292,12 +331,12 @@ function render() {
   $('activeCount').textContent = `(${active.length})`;
   $('idleCount').textContent = `(${idle.length})`;
   $('historyCount').textContent = `(${history.length})`;
-  if (!active.length) $('active').innerHTML = '<div class="empty">没有活动终端</div>';
-  if (!idle.length) $('idle').innerHTML = '<div class="empty">没有空闲终端</div>';
-  if (!history.length) $('history').innerHTML = '<div class="empty">暂无最近任务</div>';
+  if (!active.length) $('active').innerHTML = '<div class="empty">' + esc(copy.ui.noActive) + '</div>';
+  if (!idle.length) $('idle').innerHTML = '<div class="empty">' + esc(copy.ui.noIdle) + '</div>';
+  if (!history.length) $('history').innerHTML = '<div class="empty">' + esc(copy.ui.noHistory) + '</div>';
   $('historyMore').hidden = history.length <= 5;
-  $('historyMore').textContent = showAllHistory ? '收起' : `查看更多（${history.length - 5}）`;
-  $('summary').textContent = `${Number($('running').textContent)} 项进行中 · ${idle.length} 个空闲终端`;
+  $('historyMore').textContent = showAllHistory ? copy.ui.collapseHistory : format(copy.ui.moreHistory, { count: history.length - 5 });
+  $('summary').textContent = format(copy.ui.summary, { running: Number($('running').textContent), idle: idle.length });
 
   const restoreId = tooltipId || (showTimer ? undefined : hoveredId);
   if (focusedId) {
@@ -367,12 +406,16 @@ setInterval(() => {
     const hours = Math.floor(seconds / 3600);
     const minutes = Math.floor(seconds % 3600 / 60);
     const remainder = seconds % 60;
-    element.textContent = hours ? `${hours}小时${minutes}分` : `${minutes}分${String(remainder).padStart(2, '0')}秒`;
+    element.textContent = hours
+      ? format(copy.duration.hours, { hours, minutes })
+      : format(copy.duration.minutes, { minutes, seconds: String(remainder).padStart(2, '0') });
   });
   document.querySelectorAll('.tipDuration[data-start]').forEach(element => {
     const start=Number(element.dataset.start); const end=Number(element.dataset.end) || Date.now();
     const seconds=Math.max(0,Math.floor((end-start)/1000)); const hours=Math.floor(seconds/3600); const minutes=Math.floor(seconds%3600/60); const remainder=seconds%60;
-    element.textContent=hours?`${hours}小时 ${minutes}分钟`:`${minutes}分${String(remainder).padStart(2,'0')}秒`;
+    element.textContent=hours
+      ? format(copy.duration.hours, { hours, minutes })
+      : format(copy.duration.minutes, { minutes, seconds: String(remainder).padStart(2,'0') });
   });
   document.querySelectorAll('.tipUpdated[data-updated]').forEach(element => { element.textContent=timeAgo(Number(element.dataset.updated)); });
   updateConnectionStatus();

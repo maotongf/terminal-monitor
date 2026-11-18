@@ -2,8 +2,9 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const Module = require('node:module');
 const originalLoad = Module._load;
+let historyLimit = 10;
 const vscode = {
-  workspace: { getConfiguration: () => ({ get: (_key, fallback) => fallback }) }
+  workspace: { getConfiguration: () => ({ get: (_key, fallback) => historyLimit ?? fallback }) }
 };
 Module._load = function(request, parent, isMain) {
   if (request === 'vscode') return vscode;
@@ -37,4 +38,23 @@ test('reconcileTerminals removes missed close events and finishes their active t
   assert.deepEqual(manager.getTerminals().map(info => info.id), ['live']);
   assert.equal(manager.getActiveTasks().length, 0);
   assert.equal(manager.getHistory()[0].status, 'unknown');
+});
+
+test('historyLimit consistently retains zero, five, ten and one hundred completed tasks', () => {
+  for (const limit of [0, 5, 10, 100]) {
+    historyLimit = limit;
+    const manager = Object.create(TaskManager.prototype);
+    manager.terminals = new Map();
+    manager.tasks = new Map();
+    manager.history = [];
+    manager.outputStreams = new Map();
+    manager.changeEmitter = { fire() {} };
+    for (let index = 0; index < 12; index++) {
+      const id = `task-${index}`;
+      manager.tasks.set(id, { id, terminalId: 'terminal', status: 'running', startTime: 1, recentOutput: [] });
+      manager.finishTask(id, 0);
+    }
+    assert.equal(manager.getHistory().length, Math.min(12, limit));
+  }
+  historyLimit = 10;
 });

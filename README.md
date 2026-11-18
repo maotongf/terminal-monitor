@@ -8,8 +8,9 @@ A compact VS Code extension for monitoring Codex tasks and integrated terminal c
 - Monitors commands through VS Code Shell Integration events.
 - Reads Codex thread and turn status from the local Codex App Server, including Codex tasks started in the VS Code sidebar.
 - Shows Codex task titles, current status, workspace, current high-level step, and the latest final reply on hover.
+- Keeps interface text in one Chinese copy file, colors task states by meaning, and shows five recent tasks before offering more.
 - Lets you collapse the Codex, Active terminals, Idle terminals, and Recent groups.
-- Click a Codex task to focus its matched terminal, including after the task finishes. Matching uses the task title and folder; when the task has no folder, it uses the most recently active integrated terminal.
+- Click a Codex task to focus its matched terminal, including after the task finishes. Hover shows whether the match came from a manual choice, title and folder, a related CLI task, or recent terminal activity.
 - Displays Active, Quiet, Idle, Completed, Failed, and Unknown states.
 - Captures a small rolling window of recent command output.
 - Shows compact hover cards: Codex status, current step, duration and update time come from the App Server; terminal cards show only the last three nonempty output lines or the command. Empty fields are hidden.
@@ -22,7 +23,7 @@ A compact VS Code extension for monitoring Codex tasks and integrated terminal c
 
 1. **Shell Integration is required for command-level monitoring.** If VS Code cannot activate Shell Integration for a terminal, the terminal is still listed, but commands and output may not be observable.
 2. **Existing commands are not reconstructed.** When the extension first activates, commands that were already running before activation cannot reliably be recovered through the public VS Code API. Open terminals are listed as idle until a new command starts.
-3. **Codex status requires the local Codex App Server daemon.** When its control socket is available, the extension reads thread and turn status from the local App Server. It makes read-only paginated `thread/list` and `thread/turns/list` requests and does not start, resume, steer, or interrupt Codex tasks. By default, it lists sessions in the open workspace; `terminalMonitor.codexScope` can include all sessions. With no open workspace, it defaults to all sessions and labels that scope in the dashboard. Unchanged recent sessions are cached; active session reads are limited to four concurrent requests. If the daemon is unavailable, retries back off to at most 60 seconds and return to the normal 3-second interval after recovery. Terminal monitoring remains available while Codex is disconnected.
+3. **Codex status requires the local Codex App Server daemon.** When its control socket is available, the extension reads thread and turn status from the local App Server. It makes read-only paginated `thread/list` and `thread/turns/list` requests; on hover, it reads up to ten items from the selected completed turn and only displays a public `final_answer`. The App Server connection opts into its `experimentalApi` capability only to defer command and tool output from that item request. It does not start, resume, steer, or interrupt Codex tasks. By default, it lists sessions in the open workspace; `terminalMonitor.codexScope` can include all sessions. With no open workspace, it defaults to all sessions and labels that scope in the dashboard. Unchanged recent sessions are cached; active session reads are limited to four concurrent requests. If the daemon is unavailable, retries back off to at most 60 seconds and return to the normal 3-second interval after recovery. Terminal monitoring remains available while Codex is disconnected.
 4. **Terminal and Codex status mean different things.** For a Codex session, the Codex section uses the App Server's task status. For other terminal commands, Active means the command has not exited; Quiet means it has emitted no output for the configured interval. The default interval is 15 seconds.
 5. **Terminal output is a stream, not a terminal screenshot.** Full-screen TUI redraws can appear as output activity, so a terminal command may remain Active while it is waiting for input. Codex App Server status is not inferred from terminal output.
 
@@ -43,7 +44,7 @@ Clone the repository and build the extension:
 ```bash
 git clone https://github.com/maotongf/terminal-monitor.git
 cd terminal-monitor
-npm install
+npm ci
 npm run compile
 npm test
 npx vsce package
@@ -52,7 +53,7 @@ npx vsce package
 Install the generated `.vsix` in VS Code using **Extensions → Install from VSIX...**, then click the Terminal Monitor icon in the Activity Bar. To install from a terminal, pass the generated file to:
 
 ```bash
-code --install-extension terminal-monitor-1.9.0.vsix
+code --install-extension terminal-monitor-1.11.0.vsix
 ```
 
 For Remote SSH, install the extension in the remote extension host to monitor remote terminals. Codex status also requires the Codex App Server socket to be available on that remote host.
@@ -68,9 +69,9 @@ For Remote SSH, install the extension in the remote extension host to monitor re
 
 Codex tasks appear in the **Codex** section with their App Server status and current high-level step. Terminal tasks appear in the sections below. Click section headers to collapse or expand a whole group.
 
-Click a Codex task to focus its matching terminal. Terminal Monitor remembers the match for that task, preferring terminal names containing the task title and then the task folder. If the task has no folder, it focuses the most recently active integrated terminal. If no terminal is available, it opens one in the task folder or current workspace.
+Click a Codex task to focus its matching terminal. Terminal Monitor remembers the match and its confidence, prefers a unique title and folder match, then uses related CLI task timing or recent terminal activity as a fallback. Hover shows the matching basis; right-click a task to choose its terminal manually. If no terminal is available, it opens one in the task folder or current workspace.
 
-Right-click a Codex task to choose its associated terminal manually. The chosen terminal is used while it remains open.
+Manual associations are used while the chosen terminal remains open. Terminal Monitor shows five recent tasks by default; `terminalMonitor.historyLimit` controls how many completed terminal tasks it retains.
 
 No special command wrapper is required.
 

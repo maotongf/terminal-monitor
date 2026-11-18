@@ -45,17 +45,20 @@ export interface DashboardTask {
   exitCode?: number;
   recentOutput: string[];
   agentState?: string;
+  terminalOpen?: boolean;
   terminalOrder: number;
 }
 
 export type CodexTaskStatus = 'running' | 'waiting' | 'completed' | 'failed' | 'interrupted' | 'idle';
 export type CodexNotificationTransition = 'completed' | 'failed' | 'approval';
+export type CodexTerminalBindingReason = 'manual' | 'titleAndFolder' | 'relatedTask' | 'recentActivity';
 
 export interface CodexTask {
   id: string;
   turnId?: string;
   terminalId?: string;
   terminalBindingConfidence?: number;
+  terminalBindingReason?: CodexTerminalBindingReason;
   name: string;
   cwd?: string;
   source: string;

@@ -4,6 +4,7 @@ const Module = require('node:module');
 const originalLoad = Module._load;
 const vscode = {
   window: { activeTerminal: undefined },
+  Uri: { file: path => path, joinPath: (...parts) => parts.join('/') },
   workspace: { workspaceFolders: [], getConfiguration: () => ({ get: (_key, fallback) => fallback }) }
 };
 Module._load = function(request, parent, isMain) {
@@ -33,14 +34,20 @@ test('same-folder tasks remain visible; strong title match replaces fallback', (
   vscode.window.activeTerminal = a.terminal;
   const p = Object.create(DashboardProvider.prototype);
   p.tasks = { getTerminals: () => [a,b], getTerminalInfo: t => t === a.terminal ? a : b, getTerminalById: id => [a,b].find(t => t.id === id), getActiveTasks: () => [{id:'1',terminalId:'a',type:'codex',cwd:'/p'}, {id:'2',terminalId:'b',type:'codex',cwd:'/p'}], getHistory: () => [] };
-  p.codexTerminalBindings = new Map(); p.terminalActivity = new Map(); p.terminalOrder = new Map();
+  p.codexTerminalBindings = new Map(); p.historyFallbackTerminals = new Map(); p.terminalActivity = new Map(); p.terminalOrder = new Map();
   const task = { id:'thread', name:'Fix project', cwd:'/p', source:'cli', status:'running', startTime:1 };
-  assert.equal(p.bindCodexTask(task).terminalId, 'a');
+  const fallbackBinding = p.bindCodexTask(task);
+  assert.equal(fallbackBinding.terminalId, 'a');
+  assert.equal(fallbackBinding.terminalBindingConfidence, 1);
+  assert.equal(fallbackBinding.terminalBindingReason, 'recentActivity');
   let state; p.view = { webview: { postMessage: x => { state=x; return Promise.resolve(true); } } };
   p.codex = { getTasks: () => [task], isAvailable: () => true, getLastSync: () => 1 }; p.diagnostic = () => {};
   p.postState(); assert.equal(state.active.length, 2);
   b.name = 'Fix project';
-  assert.equal(p.bindCodexTask(task).terminalId, 'b');
+  const correctedBinding = p.bindCodexTask(task);
+  assert.equal(correctedBinding.terminalId, 'b');
+  assert.equal(correctedBinding.terminalBindingConfidence, 2);
+  assert.equal(correctedBinding.terminalBindingReason, 'titleAndFolder');
   p.postState(); assert.equal(state.active.length, 1);
   assert.equal(state.active[0].terminalId, 'a');
 });
@@ -57,19 +64,21 @@ test('only a confidently linked Codex CLI terminal is deduplicated', () => {
       {id:'run-b',terminalId:'b',type:'codex',cwd:'/p',startTime:900000}
     ], getHistory: () => []
   };
-  p.codexTerminalBindings = new Map(); p.terminalActivity = new Map(); p.terminalOrder = new Map();
+  p.codexTerminalBindings = new Map(); p.historyFallbackTerminals = new Map(); p.terminalActivity = new Map(); p.terminalOrder = new Map();
   const task={id:'thread',name:'CLI task',source:'cli',cwd:'/p',status:'running',startTime:10000,updatedAt:10000};
   let state; p.view={webview:{postMessage:x=>{state=x;return Promise.resolve(true)}}};
   p.codex={getTasks:()=>[task],isAvailable:()=>true,getLastSync:()=>10000}; p.diagnostic=()=>{};
   p.postState();
   assert.equal(state.active.length,1);
   assert.equal(state.active[0].terminalId,'b');
+  assert.equal(state.codex[0].terminalBindingReason,'relatedTask');
+  assert.equal(state.codex[0].terminalBindingConfidence,2);
 });
 
 test('postState prunes terminal and Codex bindings that are no longer live', () => {
   const live = { id: 'live', name: 'zsh', terminal: {}, createdAt: 1 };
   const p = Object.create(DashboardProvider.prototype);
-  p.tasks = { getTerminals: () => [live] };
+  p.tasks = { getTerminals: () => [live], getHistory: () => [] };
   p.codex = { getTasks: () => [{ id: 'current' }] };
   p.terminalOrder = new Map([['live', 0], ['closed', 1]]);
   p.terminalActivity = new Map([['live', 1], ['closed', 2]]);
@@ -78,11 +87,49 @@ test('postState prunes terminal and Codex bindings that are no longer live', () 
     ['old-task', { id: 'live', confidence: 3 }],
     ['closed-terminal', { id: 'closed', confidence: 3 }]
   ]);
+  p.historyFallbackTerminals = new Map();
 
   p.postState();
   assert.deepEqual([...p.terminalOrder.keys()], ['live']);
   assert.deepEqual([...p.terminalActivity.keys()], ['live']);
   assert.deepEqual([...p.codexTerminalBindings.keys()], ['current']);
+});
+
+test('closed history tasks explain and reuse their fallback terminal', () => {
+  const task = { id: 'task-1', terminalId: 'closed', name: 'Build', cwd: '/workspace/project', status: 'completed', startTime: 1, recentOutput: [] };
+  const oldTerminals = vscode.window.terminals;
+  const oldCreateTerminal = vscode.window.createTerminal;
+  const oldUriFile = vscode.Uri.file;
+  const fallback = { show() { this.showCount = (this.showCount || 0) + 1; } };
+  let createCount = 0;
+  vscode.window.terminals = [];
+  vscode.window.createTerminal = options => { createCount++; fallback.options = options; vscode.window.terminals.push(fallback); return fallback; };
+  vscode.window.showInformationMessage = () => {};
+  vscode.Uri.file = path => path;
+
+  const p = Object.create(DashboardProvider.prototype);
+  p.tasks = {
+    getTerminalById: () => undefined,
+    getTerminalInfo: terminal => terminal === fallback ? { id: 'reopened', terminal } : undefined,
+    getHistory: () => [task],
+    getActiveTasks: () => []
+  };
+  p.historyFallbackTerminals = new Map();
+  p.terminalOrder = new Map([['reopened', 0]]);
+
+  p.focusTerminal({ terminalId: 'closed', taskId: 'task-1' });
+  p.focusTerminal({ terminalId: 'closed', taskId: 'task-1' });
+  const dashboardTask = p.toDashboard(task);
+  assert.equal(createCount, 1);
+  assert.equal(fallback.showCount, 2);
+  assert.equal(fallback.options.cwd, '/workspace/project');
+  assert.equal(dashboardTask.terminalId, 'reopened');
+  assert.equal(dashboardTask.terminalOpen, true);
+
+  vscode.window.terminals = oldTerminals;
+  if (oldCreateTerminal === undefined) delete vscode.window.createTerminal;
+  else vscode.window.createTerminal = oldCreateTerminal;
+  vscode.Uri.file = oldUriFile;
 });
 
 test('idle terminal count excludes VS Code terminals hidden from the user', () => {
@@ -91,6 +138,7 @@ test('idle terminal count excludes VS Code terminals hidden from the user', () =
   const p = Object.create(DashboardProvider.prototype);
   p.tasks = { getTerminals: () => [visible, hidden], getActiveTasks: () => [], getHistory: () => [] };
   p.codexTerminalBindings = new Map();
+  p.historyFallbackTerminals = new Map();
   p.terminalActivity = new Map();
   p.terminalOrder = new Map();
   p.codex = { getTasks: () => [], isAvailable: () => true, getLastSync: () => 1 };
@@ -113,6 +161,7 @@ test('dashboard skips unchanged and hidden state pushes, then sends the latest s
   };
   provider.codex = { getTasks: () => [], isAvailable: () => true, getLastSync: () => 1 };
   provider.codexTerminalBindings = new Map();
+  provider.historyFallbackTerminals = new Map();
   provider.terminalActivity = new Map();
   provider.terminalOrder = new Map();
   provider.lastPostedStateSnapshot = '';
@@ -145,6 +194,7 @@ test('dashboard retries unchanged state after the webview rejects a post', async
   provider.tasks = { getTerminals: () => [], getActiveTasks: () => [], getHistory: () => [] };
   provider.codex = { getTasks: () => [], isAvailable: () => true, getLastSync: () => 1 };
   provider.codexTerminalBindings = new Map();
+  provider.historyFallbackTerminals = new Map();
   provider.terminalActivity = new Map();
   provider.terminalOrder = new Map();
   provider.lastPostedStateSnapshot = '';
@@ -390,6 +440,26 @@ test('oversized frame destroys original socket and disposed client cannot reconn
   const frame = Buffer.alloc(10); frame[0]=0x81; frame[1]=127; frame.writeBigUInt64BE(9n*1024n*1024n,2);
   c.consumeFrames(frame); assert.equal(destroyed,true);
   c.dispose(); await assert.rejects(c.request('thread/list', {}), /disposed/);
+});
+
+test('App Server initialization opts into the experimental capability used by reply reads', async () => {
+  const c = new AppServerClient('/unused', '1.11.0');
+  let initializeParams;
+  let initializedMessage;
+  c.socket = { destroy() {} };
+  c.upgraded = true;
+  c.requestRaw = async (method, params) => {
+    assert.equal(method, 'initialize');
+    initializeParams = params;
+    return {};
+  };
+  c.sendMessage = message => { initializedMessage = message; };
+
+  await c.ensureInitialized();
+
+  assert.equal(initializeParams.capabilities.experimentalApi, true);
+  assert.equal(initializedMessage.method, 'initialized');
+  c.dispose();
 });
 
 test('Codex turn timing and waiting reasons use server data', async () => {
