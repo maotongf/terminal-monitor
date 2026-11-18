@@ -38,13 +38,18 @@ function taskNode(task, history = false) {
   el.dataset.id = task.id;
   el.innerHTML = '<div class="icon">' + icon(task) + '</div><div class="main"><div class="top"><span class="name">' + esc(task.terminalName || task.name) + '</span></div><div class="sub">' + esc(task.cwd ? shortPath(task.cwd) : ('Terminal · ' + (task.name || 'Shell'))) + '</div></div><div class="right"><span class="status ' + esc(task.status) + '">' + label(task.status) + '</span><span class="duration" data-counting="' + (task.status === 'idle' || task.status === 'unknown' ? 'false' : 'true') + '" data-start="' + task.startTime + '" data-end="' + (task.endTime || '') + '">' + (task.status === 'idle' || task.status === 'unknown' ? '' : duration(task)) + '</span></div>';
   el.addEventListener('click', () => vscode.postMessage({ type: 'focusTerminal', terminalId: task.terminalId }));
+  attachTooltip(el, task);
+  return el;
+}
+
+function attachTooltip(el, task) {
   el.addEventListener('mouseenter', () => {
     clearTimeout(hideTimer);
     hideTimer = null;
     clearTimeout(showTimer);
     showTimer = setTimeout(() => {
       showTimer = null;
-      const latestTask = [...state.active, ...state.idle, ...state.history].find(item => item.id === task.id) || task;
+      const latestTask = [...(state.codex || []), ...state.active, ...state.idle, ...state.history].find(item => item.id === task.id) || task;
       const latestNode = [...document.querySelectorAll('.task')].find(item => item.dataset.id === task.id) || el;
       showTooltip(latestTask, latestNode);
     }, 400);
@@ -52,17 +57,16 @@ function taskNode(task, history = false) {
   el.addEventListener('mouseleave', scheduleHideTooltip);
   el.addEventListener('focus', () => showTooltip(task, el));
   el.addEventListener('blur', scheduleHideTooltip);
-  return el;
-}
+ }
 
 function codexNode(task) {
   const el = document.createElement('div');
   el.className = 'task codexTask';
   el.tabIndex = 0;
   el.dataset.id = task.id;
-  el.title = task.terminalId ? 'Focus matching terminal' : 'Open terminal in task folder';
   el.innerHTML = '<div class="icon">✳</div><div class="main"><div class="top"><span class="name">' + esc(task.name || 'Codex') + '</span></div><div class="sub codexStep">' + esc(task.currentStep || sourceLabel(task.source)) + (task.cwd ? ' · ' + esc(shortPath(task.cwd)) : '') + '</div></div><div class="right"><span class="status ' + esc(task.status) + '">' + label(task.status) + '</span><span class="duration" data-counting="' + (task.status === 'running' || task.status === 'waiting' ? 'true' : 'false') + '" data-start="' + task.startTime + '" data-end="' + (task.endTime || '') + '">' + duration(task) + '</span></div>';
   el.addEventListener('click', () => vscode.postMessage({ type: 'focusCodexTask', terminalId: task.terminalId, source: task.source, cwd: task.cwd, name: task.name, status: task.status }));
+  attachTooltip(el, task);
   return el;
 }
 
@@ -77,8 +81,25 @@ function showTooltip(task, el) {
   activeTooltipTask = task;
   const tip = $('tooltip');
   const rect = el.getBoundingClientRect();
-  const lines = (task.recentOutput || []).slice(-5);
-  tip.innerHTML = '<div class="tiphead"><span>' + esc(task.terminalName || task.name) + '</span><span class="status ' + esc(task.status) + '">' + label(task.status) + '</span></div><div class="tipmeta">' + esc(task.type) + ' · ' + esc(duration(task)) + '</div><div class="tiplabel">COMMAND</div><div class="command">' + esc(task.command || 'No command') + '</div><div class="tiplabel">FOLDER</div><div class="command">' + esc(task.cwd || 'Unavailable') + '</div><div class="tiplabel">RECENT OUTPUT · ' + (task.lastOutputTime ? esc(timeAgo(task.lastOutputTime)) : 'No output') + '</div><div class="logs">' + (lines.length ? lines.map(esc).join('\n') : 'No output yet') + '</div>' + (task.agentState ? '<div class="tipmeta">' + esc(task.agentState) + '</div>' : '');
+  const isCodex = typeof task.source === 'string';
+  const title = isCodex ? task.name : (task.terminalName || task.name);
+  const statusText = ({ running: '进行中', waiting: '等待处理', quiet: '暂无输出', idle: '空闲', completed: '已完成', failed: '失败', interrupted: '已中断', unknown: '未知' })[task.status] || task.status;
+  const elapsed = task.status === 'idle' || task.status === 'unknown' ? '' : ' · ' + esc(duration(task));
+  const header = '<div class="tiphead"><span style="overflow-wrap:anywhere">' + esc(title) + '</span></div>';
+  const status = '<div class="tipmeta">' + esc(statusText) + elapsed + '</div>';
+  let body = '';
+  if (isCodex) {
+    // These fields come from the Codex thread and turn response, not terminal output.
+    if (task.currentStep) body += '<div style="margin-top:8px">' + esc(task.currentStep) + '</div>';
+    body += '<div class="tipmeta">Codex' + (task.updatedAt ? ' · 更新于 ' + esc(timeAgo(task.updatedAt)) : '') + '</div>';
+  } else {
+    const lines = (task.recentOutput || []).filter(line => String(line).trim()).slice(-3);
+    if (lines.length) body += '<div class="logs" style="margin-top:8px">' + esc(lines.join('\n').slice(-600)) + '</div>';
+    else if (task.command) body += '<div class="command" style="margin-top:8px">' + esc(task.command.slice(0, 240)) + '</div>';
+    if (task.exitCode !== undefined && task.exitCode !== 0) body += '<div class="tipmeta">退出码 ' + esc(task.exitCode) + '</div>';
+  }
+  const folder = task.cwd ? '<div class="tipmeta" title="' + esc(task.cwd) + '">' + esc(shortPath(task.cwd)) + '</div>' : '';
+  tip.innerHTML = header + status + body + folder;
   tip.classList.add('show');
   const width = Math.min(310, window.innerWidth - 24);
   let left = Math.min(rect.left, window.innerWidth - width - 8);
@@ -111,7 +132,7 @@ function hideTooltip() {
 
 function timeAgo(timestamp) {
   const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
-  return seconds < 60 ? `${seconds}s ago` : `${Math.floor(seconds / 60)}m ago`;
+  return seconds < 60 ? `${seconds} 秒前` : `${Math.floor(seconds / 60)} 分钟前`;
 }
 
 function setSectionCollapsed(id, collapsed) {
@@ -169,7 +190,7 @@ function render() {
 
   const restoreId = tooltipId || (showTimer ? undefined : hoveredId);
   if (restoreId) {
-    const task = [...active, ...idle, ...history].find(item => item.id === restoreId);
+    const task = [...codex, ...active, ...idle, ...history].find(item => item.id === restoreId);
     const node = [...document.querySelectorAll('.task')].find(item => item.dataset.id === restoreId);
     if (task && node) showTooltip(task, node);
     else if (tooltipId) hideTooltip();
