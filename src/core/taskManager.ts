@@ -2,13 +2,14 @@ import * as vscode from 'vscode';
 import { createId } from '../utils/idGenerator';
 import { Task, TerminalInfo, TaskStatus } from './types';
 import { detectTaskKind, displayNameForKind } from '../agents/agentDetector';
-import { splitOutputLines } from '../utils/ansiCleaner';
+import { TerminalOutputStream } from '../utils/terminalOutputStream';
 
 export class TaskManager {
   private terminals = new Map<string, TerminalInfo>();
   private terminalIds = new WeakMap<vscode.Terminal, string>();
   private tasks = new Map<string, Task>();
   private history: Task[] = [];
+  private outputStreams = new Map<string, TerminalOutputStream>();
   private readonly changeEmitter = new vscode.EventEmitter<void>();
   readonly onDidChange = this.changeEmitter.event;
 
@@ -73,11 +74,10 @@ export class TaskManager {
   appendOutput(taskId: string, chunk: string): void {
     const task = this.tasks.get(taskId);
     if (!task) return;
-    const lines = splitOutputLines(chunk);
-    if (!lines.length) return;
-    task.recentOutput.push(...lines);
     const lineLimit = vscode.workspace.getConfiguration('terminalMonitor').get<number>('outputLineLimit', 5);
-    task.recentOutput = task.recentOutput.slice(-Math.max(1, lineLimit));
+    let stream = this.outputStreams.get(taskId);
+    if (!stream) { stream = new TerminalOutputStream(); this.outputStreams.set(taskId, stream); }
+    task.recentOutput = stream.push(chunk, lineLimit);
     task.lastOutputTime = Date.now();
     if (task.status === 'quiet') task.status = 'running';
     this.changeEmitter.fire();
@@ -99,6 +99,12 @@ export class TaskManager {
   finishTask(taskId: string, exitCode?: number, forcedStatus?: TaskStatus): Task | undefined {
     const task = this.tasks.get(taskId);
     if (!task) return undefined;
+    const outputStream = this.outputStreams.get(taskId);
+    if (outputStream) {
+      const lineLimit = vscode.workspace.getConfiguration('terminalMonitor').get<number>('outputLineLimit', 5);
+      task.recentOutput = outputStream.flush(lineLimit);
+      this.outputStreams.delete(taskId);
+    }
     task.endTime = Date.now();
     task.exitCode = exitCode;
     task.status = forcedStatus ?? (exitCode === undefined ? 'unknown' : exitCode === 0 ? 'completed' : 'failed');
