@@ -10,7 +10,9 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
   private namePoll?: ReturnType<typeof setInterval>;
   private renderTimer?: ReturnType<typeof setTimeout>;
   private terminalOrder = new Map<string, number>();
+  private terminalActivity = new Map<string, number>();
   private readonly codexTerminalBindings = new Map<string, string>();
+  private activeTerminalSubscription: vscode.Disposable;
   private lastPostSnapshot = '';
   private lastRenderedSnapshot = '';
 
@@ -21,6 +23,8 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
     private readonly diagnostic: (message: string) => void = () => undefined
   ) {
     this.changeSubscription = tasks.onDidChange(() => this.schedulePostState());
+    this.recordActiveTerminal(vscode.window.activeTerminal);
+    this.activeTerminalSubscription = vscode.window.onDidChangeActiveTerminal(terminal => this.recordActiveTerminal(terminal));
     this.namePoll = setInterval(() => {
       this.syncTerminalNames();
       this.postState();
@@ -115,12 +119,17 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
   }
 
   private bindCodexTask(task: CodexTask): CodexTask {
-    if (!task.cwd) return task;
-
     const boundTerminalId = this.codexTerminalBindings.get(task.id);
-    if (boundTerminalId) return { ...task, terminalId: boundTerminalId };
+    if (boundTerminalId && this.tasks.getTerminalById(boundTerminalId)) {
+      return { ...task, terminalId: boundTerminalId };
+    }
+    if (boundTerminalId) this.codexTerminalBindings.delete(task.id);
 
-    const isCliTask = task.source === 'cli' || task.source === 'exec';
+    const openMatches = this.tasks.getTerminals().filter(terminal => !task.cwd || samePath(terminal.cwd, task.cwd));
+    const nameMatches = openMatches.filter(terminal => terminalNameMatches(task.name, terminal.name));
+    if (nameMatches.length === 1) return this.bindTerminal(task, nameMatches[0].id);
+
+    const isCliTask = !!task.cwd && (task.source === 'cli' || task.source === 'exec');
     const matching = isCliTask
       ? [...this.tasks.getActiveTasks(), ...this.tasks.getHistory()].filter(candidate =>
         candidate.type === 'codex' && samePath(candidate.cwd, task.cwd))
@@ -139,12 +148,15 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
       }
     }
 
-    if (!terminalId) {
-      const openMatches = this.tasks.getTerminals().filter(terminal => samePath(terminal.cwd, task.cwd));
-      if (openMatches.length === 1) terminalId = openMatches[0].id;
+    if (!terminalId && openMatches.length) {
+      terminalId = this.preferredTerminal(nameMatches.length ? nameMatches : openMatches)?.id;
     }
 
     if (!terminalId) return task;
+    return this.bindTerminal(task, terminalId);
+  }
+
+  private bindTerminal(task: CodexTask, terminalId: string): CodexTask {
     this.codexTerminalBindings.set(task.id, terminalId);
     return { ...task, terminalId };
   }
@@ -153,13 +165,19 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
     const directId = typeof message.terminalId === 'string' ? message.terminalId : undefined;
     const direct = directId ? this.tasks.getTerminalById(directId) : undefined;
     if (direct) {
-      direct.terminal.show();
+      direct.terminal.show(false);
       return;
     }
 
     const cwd = typeof message.cwd === 'string' ? message.cwd : undefined;
     const source = typeof message.source === 'string' ? message.source : '';
+    const name = typeof message.name === 'string' ? message.name : '';
     const candidates = new Map<string, TerminalInfo>();
+    for (const terminal of this.tasks.getTerminals()) {
+      if (name && terminalNameMatches(name, terminal.name) && (!cwd || samePath(terminal.cwd, cwd))) {
+        candidates.set(terminal.id, terminal);
+      }
+    }
     if (cwd && (source === 'cli' || source === 'exec')) {
       for (const task of [...this.tasks.getActiveTasks(), ...this.tasks.getHistory()]) {
         if (task.type !== 'codex' || !samePath(task.cwd, cwd)) continue;
@@ -174,29 +192,44 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
     }
 
     if (candidates.size === 1) {
-      candidates.values().next().value?.terminal.show();
+      candidates.values().next().value?.terminal.show(false);
       return;
     }
     if (candidates.size > 1) {
-      const choices = [...candidates.values()].map(terminal => ({
-        label: terminal.name,
-        description: terminal.cwd,
-        terminal
-      }));
-      const choice = await vscode.window.showQuickPick(choices, {
-        placeHolder: 'Choose a terminal for this Codex task'
-      });
-      choice?.terminal.terminal.show();
+      this.preferredTerminal([...candidates.values()])?.terminal.show(false);
       return;
     }
 
-    const name = typeof message.name === 'string' && message.name.trim() ? message.name.trim() : 'Codex task';
-    const options: vscode.TerminalOptions = { name: `Codex · ${name}`.slice(0, 60) };
+    if (!cwd && this.tasks.getTerminals().length) {
+      const active = this.preferredTerminal(this.tasks.getTerminals());
+      active?.terminal.show(false);
+      return;
+    }
+
+    const taskName = typeof message.name === 'string' && message.name.trim() ? message.name.trim() : 'Codex task';
+    const options: vscode.TerminalOptions = { name: `Codex · ${taskName}`.slice(0, 60) };
     const workspace = vscode.workspace.workspaceFolders?.[0];
     if (cwd) options.cwd = vscode.Uri.file(cwd);
     else if (workspace) options.cwd = workspace.uri;
     const terminal = vscode.window.createTerminal(options);
     terminal.show();
+  }
+
+  private recordActiveTerminal(terminal?: vscode.Terminal): void {
+    if (!terminal) return;
+    const info = this.tasks.getTerminalInfo(terminal) ?? this.tasks.registerTerminal(terminal);
+    this.terminalActivity.set(info.id, Date.now());
+  }
+
+  private preferredTerminal(candidates: TerminalInfo[]): TerminalInfo | undefined {
+    const active = vscode.window.activeTerminal;
+    const activeInfo = active ? this.tasks.getTerminalInfo(active) : undefined;
+    if (activeInfo && candidates.some(candidate => candidate.id === activeInfo.id)) return activeInfo;
+    return [...candidates].sort((left, right) => {
+      const leftActivity = this.terminalActivity.get(left.id) ?? left.createdAt;
+      const rightActivity = this.terminalActivity.get(right.id) ?? right.createdAt;
+      return rightActivity - leftActivity || (this.terminalOrder.get(right.id) ?? 0) - (this.terminalOrder.get(left.id) ?? 0);
+    })[0];
   }
 
   private getHtml(webview: vscode.Webview): string {
@@ -227,6 +260,7 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
 
   dispose(): void {
     this.changeSubscription.dispose();
+    this.activeTerminalSubscription.dispose();
     if (this.namePoll) clearInterval(this.namePoll);
     if (this.renderTimer) clearTimeout(this.renderTimer);
   }
@@ -244,4 +278,11 @@ function samePath(left?: string, right?: string): boolean {
   return process.platform === 'win32'
     ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
     : normalizedLeft === normalizedRight;
+}
+
+function terminalNameMatches(taskName: string, terminalName: string): boolean {
+  const name = taskName.trim().toLocaleLowerCase();
+  const terminal = terminalName.trim().toLocaleLowerCase();
+  const genericNames = new Set(['codex', 'codex cli', 'codex task', 'codex in vs code']);
+  return name.length >= 5 && !genericNames.has(name) && terminal.includes(name);
 }
