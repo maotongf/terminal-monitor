@@ -29,7 +29,7 @@ function icon(task) {
 
 function label(status, task) {
   if (status === 'waiting' && task?.waitingReason === 'tool') return '等待工具';
-  return ({ running: '进行中', waiting: '等待你', quiet: '暂无输出', idle: '空闲', completed: '已完成', failed: '失败', interrupted: '已中断', unknown: '未知' })[status] || '未知';
+  return ({ running: '进行中', waiting: '待你处理', quiet: '暂无输出', idle: '空闲', completed: '已完成', failed: '失败', interrupted: '已中断', unknown: '未知' })[status] || '未知';
 }
 
 function sourceLabel(source) {
