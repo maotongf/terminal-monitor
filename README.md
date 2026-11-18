@@ -37,13 +37,14 @@ git clone https://github.com/maotongf/terminal-monitor.git
 cd terminal-monitor
 npm install
 npm run compile
+npm test
 npx vsce package
 ```
 
 Install the generated `.vsix` in VS Code using **Extensions → Install from VSIX...**, then click the Terminal Monitor icon in the Activity Bar. To install from a terminal, pass the generated file to:
 
 ```bash
-code --install-extension terminal-monitor-1.2.8.vsix
+code --install-extension terminal-monitor-1.2.9.vsix
 ```
 
 For Remote SSH, install the extension in the remote extension host if you want it to monitor terminals running on the remote machine.
