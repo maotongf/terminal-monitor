@@ -1,0 +1,66 @@
+{
+  "name": "terminal-monitor",
+  "displayName": "Terminal Monitor",
+  "description": "A compact, real-time monitor for VS Code integrated terminals and AI coding agents.",
+  "version": "1.2.3",
+  "publisher": "local-test-publisher",
+  "license": "MIT",
+  "engines": { "vscode": "^1.93.0" },
+  "categories": ["Other", "Productivity"],
+  "keywords": ["terminal", "codex", "claude", "agent", "monitor"],
+  "activationEvents": ["onStartupFinished", "onView:terminalMonitor.dashboard"],
+  "extensionKind": ["workspace"],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        { "id": "terminalMonitor", "title": "Terminal Monitor", "icon": "resources/activity.svg" }
+      ]
+    },
+    "views": {
+      "terminalMonitor": [
+        { "id": "terminalMonitor.dashboard", "name": "Activity", "type": "webview" }
+      ]
+    },
+    "commands": [
+      { "command": "terminalMonitor.refresh", "title": "Terminal Monitor: Refresh" },
+      { "command": "terminalMonitor.show", "title": "Terminal Monitor: Show" }
+    ],
+    "configuration": {
+      "title": "Terminal Monitor",
+      "properties": {
+        "terminalMonitor.quietThresholdSeconds": {
+          "type": "number", "default": 15, "minimum": 5,
+          "description": "Mark an active terminal command as quiet after this many seconds without output."
+        },
+        "terminalMonitor.completionNotifications": {
+          "type": "boolean", "default": true,
+          "description": "Show a notification when a task lasting at least 30 seconds completes successfully."
+        },
+        "terminalMonitor.failureNotifications": {
+          "type": "boolean", "default": true,
+          "description": "Show a notification when a task exits with a non-zero code."
+        },
+        "terminalMonitor.outputLineLimit": {
+          "type": "number", "default": 5, "minimum": 1, "maximum": 20,
+          "description": "Maximum number of recent output lines kept for each task."
+        },
+        "terminalMonitor.historyLimit": {
+          "type": "number", "default": 10, "minimum": 0, "maximum": 100,
+          "description": "Number of completed tasks retained in the recent list."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.93.0",
+    "@types/node": "^20.14.10",
+    "typescript": "^5.5.4",
+    "@vscode/vsce": "^3.2.1"
+  }
+}

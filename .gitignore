@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.vscode-test/
+*.vsix
+.DS_Store
+.env
+.env.*
+/extension.vsixmanifest
+/[[]Content_Types].xml

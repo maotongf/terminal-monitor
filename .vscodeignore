@@ -1,0 +1,11 @@
+.vscode/**
+.vscode-test/**
+test/**
+src/**
+**/*.ts
+**/*.map
+.gitignore
+.git/**
+node_modules/@types/**
+node_modules/typescript/**
+node_modules/@vscode/test-electron/**
