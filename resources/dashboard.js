@@ -238,7 +238,10 @@ function render() {
 
   $('running').textContent = active.filter(task => task.status === 'running' || task.status === 'quiet').length + codex.filter(task => task.status === 'running').length;
   $('waiting').textContent = codex.filter(task => task.status === 'waiting' && task.waitingReason !== 'tool').length;
-  $('failed').textContent = history.filter(task => task.status === 'failed').length + codex.filter(task => task.status === 'failed').length;
+  const terminalFailures = history.filter(task => task.status === 'failed');
+  const duplicateCodexFailures = codex.filter(task => task.status === 'failed' && (task.source === 'cli' || task.source === 'exec') && task.terminalBindingConfidence >= 2 &&
+    terminalFailures.some(terminalTask => terminalTask.terminalId === task.terminalId && Math.abs(terminalTask.startTime - task.startTime) <= 30_000)).length;
+  $('failed').textContent = terminalFailures.length + codex.filter(task => task.status === 'failed').length - duplicateCodexFailures;
 
   updateList('codex', codex, codexNode);
   $('codexCount').textContent = `(${codex.length})`;

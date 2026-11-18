@@ -53,6 +53,7 @@ export type CodexTaskStatus = 'running' | 'waiting' | 'completed' | 'failed' | '
 export interface CodexTask {
   id: string;
   terminalId?: string;
+  terminalBindingConfidence?: number;
   name: string;
   cwd?: string;
   source: string;

@@ -136,7 +136,7 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
     const nameMatches = openMatches.filter(terminal => terminalNameMatches(task.name, terminal.name));
     if (nameMatches.length === 1) return this.bindTerminal(task, nameMatches[0].id, 2);
 
-    if (binding && this.tasks.getTerminalById(binding.id)) return { ...task, terminalId: binding.id };
+    if (binding && this.tasks.getTerminalById(binding.id)) return { ...task, terminalId: binding.id, terminalBindingConfidence: binding.confidence };
 
     const isCliTask = !!task.cwd && (task.source === 'cli' || task.source === 'exec');
     const matching = isCliTask
@@ -170,10 +170,10 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
   private bindTerminal(task: CodexTask, terminalId: string, confidence: number): CodexTask {
     const existing = this.codexTerminalBindings.get(task.id);
     if (existing && existing.confidence >= confidence && this.tasks.getTerminalById(existing.id)) {
-      return { ...task, terminalId: existing.id };
+      return { ...task, terminalId: existing.id, terminalBindingConfidence: existing.confidence };
     }
     this.codexTerminalBindings.set(task.id, { id: terminalId, confidence });
-    return { ...task, terminalId };
+    return { ...task, terminalId, terminalBindingConfidence: confidence };
   }
 
   private async focusCodexTask(message: Record<string, unknown>): Promise<void> {
