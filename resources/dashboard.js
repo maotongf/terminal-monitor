@@ -60,9 +60,9 @@ function codexNode(task) {
   el.className = 'task codexTask';
   el.tabIndex = 0;
   el.dataset.id = task.id;
-  el.title = task.source === 'vscode' ? 'No integrated terminal is linked' : 'Focus matching terminal';
+  el.title = task.terminalId ? 'Focus matching terminal' : 'Open terminal in task folder';
   el.innerHTML = '<div class="icon">✳</div><div class="main"><div class="top"><span class="name">' + esc(task.name || 'Codex') + '</span></div><div class="sub codexStep">' + esc(task.currentStep || sourceLabel(task.source)) + (task.cwd ? ' · ' + esc(shortPath(task.cwd)) : '') + '</div></div><div class="right"><span class="status ' + esc(task.status) + '">' + label(task.status) + '</span><span class="duration" data-counting="' + (task.status === 'running' || task.status === 'waiting' ? 'true' : 'false') + '" data-start="' + task.startTime + '" data-end="' + (task.endTime || '') + '">' + duration(task) + '</span></div>';
-  el.addEventListener('click', () => vscode.postMessage({ type: 'focusCodexTask', terminalId: task.terminalId, source: task.source, cwd: task.cwd }));
+  el.addEventListener('click', () => vscode.postMessage({ type: 'focusCodexTask', terminalId: task.terminalId, source: task.source, cwd: task.cwd, name: task.name, status: task.status }));
   return el;
 }
 

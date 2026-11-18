@@ -10,6 +10,7 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
   private namePoll?: ReturnType<typeof setInterval>;
   private renderTimer?: ReturnType<typeof setTimeout>;
   private terminalOrder = new Map<string, number>();
+  private readonly codexTerminalBindings = new Map<string, string>();
   private lastPostSnapshot = '';
   private lastRenderedSnapshot = '';
 
@@ -79,13 +80,7 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
     if (!this.view) return;
     const terminals = this.tasks.getTerminals();
     terminals.forEach((terminal, index) => this.terminalOrder.set(terminal.id, index));
-    const codexTasks: CodexTask[] = this.codex.getTasks().map(task => {
-      if ((task.source !== 'cli' && task.source !== 'exec') || !task.cwd) return task;
-      const matches = new Set([...this.tasks.getActiveTasks(), ...this.tasks.getHistory()]
-        .filter(candidate => candidate.type === 'codex' && samePath(candidate.cwd, task.cwd))
-        .map(candidate => candidate.terminalId));
-      return matches.size === 1 ? { ...task, terminalId: [...matches][0] } : task;
-    });
+    const codexTasks: CodexTask[] = this.codex.getTasks().map(task => this.bindCodexTask(task));
     const trackedCliDirectories = new Set(codexTasks
       .filter(task => task.source === 'cli' && (task.status === 'running' || task.status === 'waiting') && task.cwd)
       .map(task => task.cwd as string));
@@ -119,6 +114,41 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
     return { ...task, terminalOrder: this.terminalOrder.get(task.terminalId) ?? 0 };
   }
 
+  private bindCodexTask(task: CodexTask): CodexTask {
+    if (!task.cwd) return task;
+
+    const boundTerminalId = this.codexTerminalBindings.get(task.id);
+    if (boundTerminalId) return { ...task, terminalId: boundTerminalId };
+
+    const isCliTask = task.source === 'cli' || task.source === 'exec';
+    const matching = isCliTask
+      ? [...this.tasks.getActiveTasks(), ...this.tasks.getHistory()].filter(candidate =>
+        candidate.type === 'codex' && samePath(candidate.cwd, task.cwd))
+      : [];
+    const terminalIds = [...new Set(matching.map(candidate => candidate.terminalId))];
+
+    let terminalId = terminalIds.length === 1 ? terminalIds[0] : undefined;
+    if (!terminalId && terminalIds.length > 1) {
+      const byStartTime = matching
+        .filter(candidate => terminalIds.includes(candidate.terminalId))
+        .sort((left, right) => Math.abs(left.startTime - task.startTime) - Math.abs(right.startTime - task.startTime));
+      const first = byStartTime[0];
+      const second = byStartTime.find(candidate => candidate.terminalId !== first?.terminalId);
+      if (first && (!second || Math.abs(first.startTime - task.startTime) + 2_000 < Math.abs(second.startTime - task.startTime))) {
+        terminalId = first.terminalId;
+      }
+    }
+
+    if (!terminalId) {
+      const openMatches = this.tasks.getTerminals().filter(terminal => samePath(terminal.cwd, task.cwd));
+      if (openMatches.length === 1) terminalId = openMatches[0].id;
+    }
+
+    if (!terminalId) return task;
+    this.codexTerminalBindings.set(task.id, terminalId);
+    return { ...task, terminalId };
+  }
+
   private async focusCodexTask(message: Record<string, unknown>): Promise<void> {
     const directId = typeof message.terminalId === 'string' ? message.terminalId : undefined;
     const direct = directId ? this.tasks.getTerminalById(directId) : undefined;
@@ -137,7 +167,7 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
         if (terminal) candidates.set(terminal.id, terminal);
       }
     }
-    if (cwd && !candidates.size && (source === 'cli' || source === 'exec')) {
+    if (cwd && !candidates.size) {
       for (const terminal of this.tasks.getTerminals()) {
         if (samePath(terminal.cwd, cwd)) candidates.set(terminal.id, terminal);
       }
@@ -154,16 +184,19 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
         terminal
       }));
       const choice = await vscode.window.showQuickPick(choices, {
-        placeHolder: 'Choose the terminal for this Codex task'
+        placeHolder: 'Choose a terminal for this Codex task'
       });
       choice?.terminal.terminal.show();
       return;
     }
 
-    const messageText = source === 'vscode'
-      ? 'This Codex task runs in the Codex sidebar and has no integrated terminal to focus.'
-      : 'No open integrated terminal matches this Codex task.';
-    void vscode.window.showInformationMessage(messageText);
+    const name = typeof message.name === 'string' && message.name.trim() ? message.name.trim() : 'Codex task';
+    const options: vscode.TerminalOptions = { name: `Codex · ${name}`.slice(0, 60) };
+    const workspace = vscode.workspace.workspaceFolders?.[0];
+    if (cwd) options.cwd = vscode.Uri.file(cwd);
+    else if (workspace) options.cwd = workspace.uri;
+    const terminal = vscode.window.createTerminal(options);
+    terminal.show();
   }
 
   private getHtml(webview: vscode.Webview): string {

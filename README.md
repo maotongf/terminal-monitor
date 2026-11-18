@@ -9,7 +9,7 @@ A compact VS Code extension for monitoring Codex tasks and integrated terminal c
 - Reads Codex thread and turn status from the local Codex App Server, including Codex tasks started in the VS Code sidebar.
 - Shows Codex task titles, current status, workspace, and the current high-level step.
 - Lets you collapse the Codex, Active terminals, Idle terminals, and Recent groups.
-- Clicks a Codex CLI task to focus its matching integrated terminal.
+- Clicks a Codex task to focus its matching terminal, including after the task finishes; opens a terminal in the task folder if no match is open.
 - Displays Active, Quiet, Idle, Completed, Failed, and Unknown states.
 - Captures a small rolling window of recent command output.
 - Shows detailed task information when hovering over a task.
@@ -43,7 +43,7 @@ npx vsce package
 Install the generated `.vsix` in VS Code using **Extensions → Install from VSIX...**, then click the Terminal Monitor icon in the Activity Bar. To install from a terminal, pass the generated file to:
 
 ```bash
-code --install-extension terminal-monitor-1.2.3.vsix
+code --install-extension terminal-monitor-1.2.4.vsix
 ```
 
 For Remote SSH, install the extension in the remote extension host if you want it to monitor terminals running on the remote machine.
@@ -59,7 +59,7 @@ For Remote SSH, install the extension in the remote extension host if you want i
 
 Codex tasks appear in the **Codex** section with their App Server status and current high-level step. Terminal tasks appear in the sections below. Click section headers to collapse or expand a whole group.
 
-Click a CLI-origin Codex task to focus its matching integrated terminal. Codex sidebar threads are not attached to integrated terminals, so the extension explains that when selected.
+Click a Codex task to focus its matching terminal. When several terminals match, choose one from the list. If no terminal matches, Terminal Monitor opens a terminal in the task's folder (or the current workspace when the task folder is unavailable).
 
 No special command wrapper is required.
 
