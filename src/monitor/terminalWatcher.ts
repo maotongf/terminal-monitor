@@ -6,6 +6,7 @@ import { Notifier } from '../notification/notifier';
 export class TerminalWatcher implements vscode.Disposable {
   private disposables: vscode.Disposable[] = [];
   private readers = new Map<string, Promise<void>>();
+  private executionTaskIds = new WeakMap<vscode.TerminalShellExecution, string>();
   private output = vscode.window.createOutputChannel('Terminal Monitor');
   private syncTimer?: ReturnType<typeof setInterval>;
   private lastSnapshot?: string;
@@ -31,15 +32,19 @@ export class TerminalWatcher implements vscode.Disposable {
       const command = event.execution.commandLine.value;
       const cwd = event.execution.cwd?.fsPath ?? event.terminal.shellIntegration?.cwd?.fsPath;
       const task = this.tasks.startTask(event.terminal, String(command), cwd);
+      this.executionTaskIds.set(event.execution, task.id);
       this.output.appendLine(`Command started: type=${task.type}.`);
       this.readOutput(event.execution, task);
     }));
     this.disposables.push(vscode.window.onDidEndTerminalShellExecution(async event => {
-      const info = this.tasks.getTerminalInfo(event.terminal);
-      const taskId = info?.currentTaskId;
-      if (!taskId) return;
+      const taskId = this.executionTaskIds.get(event.execution);
+      if (!taskId) {
+        this.output.appendLine('Command ended without a matching execution start; ignored.');
+        return;
+      }
+      this.executionTaskIds.delete(event.execution);
       // Drain any buffered output before moving the task into history.
-      await this.readers.get(taskId);
+      await this.waitForReader(taskId, 500);
       const task = this.tasks.finishTask(taskId, event.exitCode);
       if (task) {
         this.output.appendLine(`Command ended: type=${task.type}, exitCode=${event.exitCode ?? 'unknown'}.`);
@@ -63,11 +68,13 @@ export class TerminalWatcher implements vscode.Disposable {
   private syncTerminals(reason: string): number {
     const terminals = vscode.window.terminals;
     let shellIntegrationCount = 0;
+    let hiddenTerminalCount = 0;
 
     for (const terminal of terminals) {
       const info = this.tasks.registerTerminal(terminal);
       this.tasks.updateTerminalName(terminal);
       const cwd = terminal.shellIntegration?.cwd?.fsPath;
+      if (isHiddenTerminal(terminal)) hiddenTerminalCount++;
       if (terminal.shellIntegration) {
         shellIntegrationCount++;
         if (!info.shellIntegrationAvailable || (cwd && info.cwd !== cwd)) {
@@ -75,13 +82,14 @@ export class TerminalWatcher implements vscode.Disposable {
         }
       }
     }
+    this.tasks.reconcileTerminals(terminals);
 
     const host = vscode.env.remoteName ?? 'local';
-    const snapshot = `${host}:${terminals.length}:${shellIntegrationCount}`;
+    const snapshot = `${host}:${terminals.length}:${hiddenTerminalCount}:${shellIntegrationCount}`;
     if (snapshot !== this.lastSnapshot || reason === 'manual-refresh') {
       this.lastSnapshot = snapshot;
       this.output.appendLine(
-        `${reason}: host=${host}, terminals=${terminals.length}, shellIntegration=${shellIntegrationCount}.`
+        `${reason}: host=${host}, terminals=${terminals.length}, hidden=${hiddenTerminalCount}, shellIntegration=${shellIntegrationCount}.`
       );
     }
     return terminals.length;
@@ -102,10 +110,26 @@ export class TerminalWatcher implements vscode.Disposable {
     void reader.finally(() => this.readers.delete(task.id));
   }
 
+  private async waitForReader(taskId: string, timeoutMs: number): Promise<void> {
+    const reader = this.readers.get(taskId);
+    if (!reader) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([reader, new Promise<void>(resolve => { timer = setTimeout(resolve, timeoutMs); })]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   dispose(): void {
     for (const disposable of this.disposables) disposable.dispose();
     this.disposables = [];
     if (this.syncTimer) clearInterval(this.syncTimer);
     this.output.dispose();
   }
+}
+
+function isHiddenTerminal(terminal: vscode.Terminal): boolean {
+  const options = terminal.creationOptions;
+  return !!options && 'hideFromUser' in options && options.hideFromUser === true;
 }

@@ -128,6 +128,13 @@ export class TaskManager {
     this.changeEmitter.fire();
   }
 
+  reconcileTerminals(liveTerminals: readonly vscode.Terminal[]): void {
+    const live = new Set(liveTerminals);
+    for (const info of this.terminals.values()) {
+      if (!live.has(info.terminal)) this.closeTerminal(info.terminal);
+    }
+  }
+
   getTerminalInfo(terminal: vscode.Terminal): TerminalInfo | undefined {
     const id = this.terminalIds.get(terminal);
     return id ? this.terminals.get(id) : undefined;

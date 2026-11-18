@@ -90,10 +90,12 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
   }
 
   private postState(): void {
+    const codexSnapshot = this.codex.getTasks();
+    this.pruneStaleMappings(codexSnapshot);
     if (!this.view) return;
     const terminals = this.tasks.getTerminals();
     terminals.forEach((terminal, index) => this.terminalOrder.set(terminal.id, index));
-    const codexTasks: CodexTask[] = this.codex.getTasks().map(task => this.bindCodexTask(task));
+    const codexTasks: CodexTask[] = codexSnapshot.map(task => this.bindCodexTask(task));
     const trackedCliTerminals = new Set(codexTasks
       .filter(task => task.source === 'cli' && (task.status === 'running' || task.status === 'waiting') && task.terminalId &&
         (this.codexTerminalBindings.get(task.id)?.confidence ?? 0) >= 2)
@@ -103,7 +105,7 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
       .map(task => this.toDashboard(task));
     const history: DashboardTask[] = this.tasks.getHistory().map(task => this.toDashboard(task));
     const idle: DashboardTask[] = terminals
-      .filter(t => !t.currentTaskId)
+      .filter(t => !t.currentTaskId && !isHiddenTerminal(t))
       .map(t => ({
         id: `idle-${t.id}`, terminalId: t.id, terminalName: t.name,
         name: t.name, command: '', cwd: t.cwd, type: 'other', status: t.shellIntegrationAvailable ? 'idle' : 'unknown',
@@ -126,6 +128,20 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
 
   private toDashboard(task: Task): DashboardTask {
     return { ...task, terminalOrder: this.terminalOrder.get(task.terminalId) ?? 0 };
+  }
+
+  private pruneStaleMappings(codexTasks: CodexTask[]): void {
+    const terminalIds = new Set(this.tasks.getTerminals().map(terminal => terminal.id));
+    for (const terminalId of this.terminalOrder.keys()) {
+      if (!terminalIds.has(terminalId)) this.terminalOrder.delete(terminalId);
+    }
+    for (const terminalId of this.terminalActivity.keys()) {
+      if (!terminalIds.has(terminalId)) this.terminalActivity.delete(terminalId);
+    }
+    const codexTaskIds = new Set(codexTasks.map(task => task.id));
+    for (const [taskId, binding] of this.codexTerminalBindings) {
+      if (!codexTaskIds.has(taskId) || !terminalIds.has(binding.id)) this.codexTerminalBindings.delete(taskId);
+    }
   }
 
   private bindCodexTask(task: CodexTask): CodexTask {
@@ -318,4 +334,9 @@ function terminalNameMatches(taskName: string, terminalName: string): boolean {
   const terminal = terminalName.trim().toLocaleLowerCase();
   const genericNames = new Set(['codex', 'codex cli', 'codex task', 'codex in vs code']);
   return name.length >= 5 && !genericNames.has(name) && terminal.includes(name);
+}
+
+function isHiddenTerminal(info: TerminalInfo): boolean {
+  const options = info.terminal.creationOptions;
+  return !!options && 'hideFromUser' in options && options.hideFromUser === true;
 }

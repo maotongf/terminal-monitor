@@ -51,6 +51,42 @@ test('only a confidently linked Codex CLI terminal is deduplicated', () => {
   assert.equal(state.active[0].terminalId,'b');
 });
 
+test('postState prunes terminal and Codex bindings that are no longer live', () => {
+  const live = { id: 'live', name: 'zsh', terminal: {}, createdAt: 1 };
+  const p = Object.create(DashboardProvider.prototype);
+  p.tasks = { getTerminals: () => [live] };
+  p.codex = { getTasks: () => [{ id: 'current' }] };
+  p.terminalOrder = new Map([['live', 0], ['closed', 1]]);
+  p.terminalActivity = new Map([['live', 1], ['closed', 2]]);
+  p.codexTerminalBindings = new Map([
+    ['current', { id: 'live', confidence: 3 }],
+    ['old-task', { id: 'live', confidence: 3 }],
+    ['closed-terminal', { id: 'closed', confidence: 3 }]
+  ]);
+
+  p.postState();
+  assert.deepEqual([...p.terminalOrder.keys()], ['live']);
+  assert.deepEqual([...p.terminalActivity.keys()], ['live']);
+  assert.deepEqual([...p.codexTerminalBindings.keys()], ['current']);
+});
+
+test('idle terminal count excludes VS Code terminals hidden from the user', () => {
+  const visible = { id: 'visible', name: 'zsh', terminal: { creationOptions: {} }, createdAt: 1 };
+  const hidden = { id: 'hidden', name: 'Codex internal', terminal: { creationOptions: { hideFromUser: true } }, createdAt: 2 };
+  const p = Object.create(DashboardProvider.prototype);
+  p.tasks = { getTerminals: () => [visible, hidden], getActiveTasks: () => [], getHistory: () => [] };
+  p.codexTerminalBindings = new Map();
+  p.terminalActivity = new Map();
+  p.terminalOrder = new Map();
+  p.codex = { getTasks: () => [], isAvailable: () => true, getLastSync: () => 1 };
+  p.diagnostic = () => {};
+  let state;
+  p.view = { webview: { postMessage: message => { state = message; return Promise.resolve(true); } } };
+
+  p.postState();
+  assert.deepEqual(state.idle.map(task => task.terminalId), ['visible']);
+});
+
 test('temporary disconnection retains tasks and recovery updates state', async () => {
   const p = Object.create(CodexMonitor.prototype);
   p.polling = false; p.available = true; p.tasks = [{ id:'old' }]; p.diagnostic=()=>{}; p.onChange=()=>{};
