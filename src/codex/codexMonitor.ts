@@ -1,7 +1,7 @@
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { CodexTask, CodexTaskStatus } from '../core/types';
+import { CodexNotificationTransition, CodexTask, CodexTaskStatus } from '../core/types';
 import { AppServerClient } from './appServerClient';
 import { extractRecentReply } from './recentReply';
 
@@ -61,11 +61,15 @@ export class CodexMonitor implements vscode.Disposable {
   private lastConnectionState: 'connected' | 'unavailable' | undefined;
   private recentReplyCache = new Map<string, { expiresAt: number; reply?: string }>();
   private recentReplyRequests = new Map<string, Promise<string | undefined>>();
+  private notificationStates = new Map<string, { status: CodexTaskStatus; waitingReason?: CodexTask['waitingReason'] }>();
+  private notifiedCodexTransitions = new Set<string>();
+  private notificationBaselineReady = false;
   private onChange: () => void = () => undefined;
 
   constructor(
     private readonly diagnostic: (message: string) => void = () => undefined,
-    clientVersion = 'unknown'
+    clientVersion = 'unknown',
+    private readonly onCodexTransition?: (task: CodexTask, transition: CodexNotificationTransition) => void
   ) {
     const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
     this.client = new AppServerClient(path.join(codexHome, 'app-server-control', 'app-server-control.sock'), clientVersion);
@@ -217,6 +221,7 @@ export class CodexMonitor implements vscode.Disposable {
   }
 
   private updateTasks(tasks: CodexTask[]): void {
+    this.trackCodexTransitions(tasks);
     const activeTurns = new Set(tasks.filter(task => task.turnId).map(task => `${task.id}:${task.turnId}`));
     for (const key of this.recentReplyCache.keys()) {
       if (!activeTurns.has(key)) this.recentReplyCache.delete(key);
@@ -226,6 +231,40 @@ export class CodexMonitor implements vscode.Disposable {
     this.lastSnapshot = snapshot;
     this.tasks = tasks;
     this.onChange();
+  }
+
+  private trackCodexTransitions(tasks: CodexTask[]): void {
+    const currentKeys = new Set<string>();
+    for (const task of tasks) {
+      const key = JSON.stringify([task.id, task.turnId ?? '']);
+      currentKeys.add(key);
+      const previous = this.notificationStates.get(key);
+      if (this.notificationBaselineReady && previous) {
+        let transition: CodexNotificationTransition | undefined;
+        if (task.status === 'completed' && previous.status !== 'completed') transition = 'completed';
+        else if (task.status === 'failed' && previous.status !== 'failed') transition = 'failed';
+        else if (task.status === 'waiting' && task.waitingReason === 'approval' &&
+          !(previous.status === 'waiting' && previous.waitingReason === 'approval')) transition = 'approval';
+
+        if (transition) {
+          const notificationKey = `${key}\u0000${transition}`;
+          if (!this.notifiedCodexTransitions.has(notificationKey)) {
+            this.notifiedCodexTransitions.add(notificationKey);
+            this.onCodexTransition?.(task, transition);
+          }
+        }
+      }
+      this.notificationStates.set(key, { status: task.status, waitingReason: task.waitingReason });
+    }
+
+    for (const key of this.notificationStates.keys()) {
+      if (!currentKeys.has(key)) this.notificationStates.delete(key);
+    }
+    for (const key of this.notifiedCodexTransitions) {
+      const turnKey = key.slice(0, key.lastIndexOf('\u0000'));
+      if (!currentKeys.has(turnKey)) this.notifiedCodexTransitions.delete(key);
+    }
+    this.notificationBaselineReady = true;
   }
 
   dispose(): void {

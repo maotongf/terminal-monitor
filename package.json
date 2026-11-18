@@ -2,7 +2,7 @@
   "name": "terminal-monitor",
   "displayName": "Terminal Monitor",
   "description": "A compact, real-time monitor for VS Code integrated terminals and AI coding agents.",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "publisher": "local-test-publisher",
   "license": "MIT",
   "engines": { "vscode": "^1.93.0" },
@@ -40,6 +40,18 @@
         "terminalMonitor.failureNotifications": {
           "type": "boolean", "default": true,
           "description": "Show a notification when a task exits with a non-zero code."
+        },
+        "terminalMonitor.codexCompletionNotifications": {
+          "type": "boolean", "default": true,
+          "description": "Notify when a Codex turn changes to completed."
+        },
+        "terminalMonitor.codexFailureNotifications": {
+          "type": "boolean", "default": true,
+          "description": "Notify when a Codex turn changes to failed."
+        },
+        "terminalMonitor.codexApprovalNotifications": {
+          "type": "boolean", "default": true,
+          "description": "Notify when a Codex task starts waiting for approval."
         },
         "terminalMonitor.outputLineLimit": {
           "type": "number", "default": 5, "minimum": 1, "maximum": 20,

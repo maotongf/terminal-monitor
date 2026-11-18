@@ -89,7 +89,7 @@ test('idle terminal count excludes VS Code terminals hidden from the user', () =
 
 test('temporary disconnection retains tasks and recovery updates state', async () => {
   const p = Object.create(CodexMonitor.prototype);
-  p.polling = false; p.available = true; p.tasks = [{ id:'old' }]; p.recentReplyCache = new Map(); p.recentReplyRequests = new Map(); p.diagnostic=()=>{}; p.onChange=()=>{};
+  p.polling = false; p.available = true; p.tasks = [{ id:'old' }]; p.recentReplyCache = new Map(); p.recentReplyRequests = new Map(); p.notificationStates = new Map(); p.notifiedCodexTransitions = new Set(); p.notificationBaselineReady = false; p.diagnostic=()=>{}; p.onChange=()=>{};
   p.client = { request: async () => { throw Error('offline'); } };
   await p.poll(); assert.equal(p.available, false); assert.equal(p.tasks[0].id, 'old');
   p.client = { request: async () => ({ data: [] }) };
@@ -145,6 +145,50 @@ test('recent Codex reply is fetched only for the requested turn and cached', asy
     threadId: 'thread-1', turnId: 'turn-a', limit: 10, sortDirection: 'desc',
     deferOutput: { commandExecution: true, mcpToolCall: true }
   });
+});
+
+test('Codex notifications follow state transitions once per turn and skip initial history', () => {
+  const events = [];
+  const monitor = Object.create(CodexMonitor.prototype);
+  monitor.available = true;
+  monitor.tasks = [];
+  monitor.lastSnapshot = '';
+  monitor.recentReplyCache = new Map();
+  monitor.notificationStates = new Map();
+  monitor.notifiedCodexTransitions = new Set();
+  monitor.notificationBaselineReady = false;
+  monitor.onChange = () => {};
+  monitor.onCodexTransition = (_task, transition) => events.push(transition);
+  const task = { id: 'thread', turnId: 'turn-1', status: 'completed', waitingReason: undefined };
+
+  monitor.updateTasks([task]); // Initial completed history is only a baseline.
+  monitor.updateTasks([{ ...task, status: 'running' }]);
+  monitor.updateTasks([{ ...task, status: 'completed' }]);
+  monitor.updateTasks([{ ...task, status: 'running' }]);
+  monitor.updateTasks([{ ...task, status: 'completed' }]);
+  monitor.updateTasks([{ ...task, status: 'failed' }]);
+  monitor.updateTasks([{ ...task, status: 'failed' }]);
+  assert.deepEqual(events, ['completed', 'failed']);
+});
+
+test('Codex approval notification ignores tool waiting and fires when approval is needed', () => {
+  const events = [];
+  const monitor = Object.create(CodexMonitor.prototype);
+  monitor.available = true;
+  monitor.tasks = [];
+  monitor.lastSnapshot = '';
+  monitor.recentReplyCache = new Map();
+  monitor.notificationStates = new Map();
+  monitor.notifiedCodexTransitions = new Set();
+  monitor.notificationBaselineReady = false;
+  monitor.onChange = () => {};
+  monitor.onCodexTransition = (_task, transition) => events.push(transition);
+  const task = { id: 'thread', turnId: 'turn-1', status: 'waiting', waitingReason: 'tool' };
+
+  monitor.updateTasks([task]);
+  monitor.updateTasks([{ ...task, waitingReason: 'approval' }]);
+  monitor.updateTasks([{ ...task, waitingReason: 'approval' }]);
+  assert.deepEqual(events, ['approval']);
 });
 
 test('cumulative oversized fragments destroy socket', () => {

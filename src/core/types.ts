@@ -49,6 +49,7 @@ export interface DashboardTask {
 }
 
 export type CodexTaskStatus = 'running' | 'waiting' | 'completed' | 'failed' | 'interrupted' | 'idle';
+export type CodexNotificationTransition = 'completed' | 'failed' | 'approval';
 
 export interface CodexTask {
   id: string;

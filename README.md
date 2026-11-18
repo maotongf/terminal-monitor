@@ -44,7 +44,7 @@ npx vsce package
 Install the generated `.vsix` in VS Code using **Extensions → Install from VSIX...**, then click the Terminal Monitor icon in the Activity Bar. To install from a terminal, pass the generated file to:
 
 ```bash
-code --install-extension terminal-monitor-1.4.0.vsix
+code --install-extension terminal-monitor-1.5.0.vsix
 ```
 
 For Remote SSH, install the extension in the remote extension host if you want it to monitor terminals running on the remote machine.
@@ -73,6 +73,9 @@ No special command wrapper is required.
 | `terminalMonitor.quietThresholdSeconds` | `15` | Mark an active terminal command Quiet after this many seconds without output. |
 | `terminalMonitor.completionNotifications` | `true` | Notify when a task lasting at least 30 seconds completes successfully. |
 | `terminalMonitor.failureNotifications` | `true` | Notify when a task exits with a non-zero code. |
+| `terminalMonitor.codexCompletionNotifications` | `true` | Notify when a Codex turn completes. |
+| `terminalMonitor.codexFailureNotifications` | `true` | Notify when a Codex turn fails. |
+| `terminalMonitor.codexApprovalNotifications` | `true` | Notify when a Codex task waits for approval. |
 | `terminalMonitor.outputLineLimit` | `5` | Number of recent output lines retained per task. |
 | `terminalMonitor.historyLimit` | `10` | Number of completed tasks retained in Recent. |
 

@@ -9,7 +9,11 @@ export function activate(context: vscode.ExtensionContext): void {
   const taskManager = new TaskManager(context);
   const notifier = new Notifier();
   const watcher = new TerminalWatcher(taskManager, notifier);
-  const codexMonitor = new CodexMonitor(message => watcher.logDashboard(message), context.extension.packageJSON.version);
+  const codexMonitor = new CodexMonitor(
+    message => watcher.logDashboard(message),
+    context.extension.packageJSON.version,
+    (task, transition) => notifier.notifyCodexTransition(task, transition)
+  );
   watcher.start();
 
   const dashboard = new DashboardProvider(context, taskManager, codexMonitor, message => watcher.logDashboard(message));
