@@ -125,6 +125,8 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
     const codexAvailable = this.codex.isAvailable();
     const state = {
       type: 'state', active, idle, history, codex: codexTasks, codexAvailable,
+      codexScope: this.codex.getScopeLabel?.() ?? '当前工作区',
+      paginationIncomplete: this.codex.getPaginationIncomplete?.() ?? false,
       // Successful poll timestamps advance every few seconds without changing visible data.
       // The webview only needs this timestamp while disconnected.
       codexLastSync: codexAvailable ? undefined : this.codex.getLastSync()

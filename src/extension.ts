@@ -19,6 +19,12 @@ export function activate(context: vscode.ExtensionContext): void {
   const dashboard = new DashboardProvider(context, taskManager, codexMonitor, message => watcher.logDashboard(message));
   codexMonitor.start(() => dashboard.refresh());
   context.subscriptions.push(
+    vscode.workspace.onDidChangeWorkspaceFolders(() => codexMonitor.refresh()),
+    vscode.workspace.onDidChangeConfiguration(event => {
+      if (event.affectsConfiguration('terminalMonitor.codexScope')) codexMonitor.refresh();
+    })
+  );
+  context.subscriptions.push(
     vscode.window.registerWebviewViewProvider('terminalMonitor.dashboard', dashboard, {
       webviewOptions: { retainContextWhenHidden: true }
     }),

@@ -2,7 +2,7 @@
   "name": "terminal-monitor",
   "displayName": "Terminal Monitor",
   "description": "A compact, real-time monitor for VS Code integrated terminals and AI coding agents.",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "publisher": "local-test-publisher",
   "license": "MIT",
   "engines": { "vscode": "^1.93.0" },
@@ -52,6 +52,14 @@
         "terminalMonitor.codexApprovalNotifications": {
           "type": "boolean", "default": true,
           "description": "Notify when a Codex task starts waiting for approval."
+        },
+        "terminalMonitor.codexScope": {
+          "type": "string", "enum": ["workspace", "all"], "default": "workspace",
+          "enumDescriptions": [
+            "Show Codex sessions whose working directory matches an open workspace folder.",
+            "Show Codex sessions from all working directories."
+          ],
+          "description": "Choose which Codex sessions Terminal Monitor lists. With no open workspace, all sessions are shown."
         },
         "terminalMonitor.outputLineLimit": {
           "type": "number", "default": 5, "minimum": 1, "maximum": 20,

@@ -30,9 +30,10 @@ test('dashboard counts, keyed rows, keyboard activation and collapse state', () 
   const context={acquireVsCodeApi:()=>({postMessage:m=>messages.push(m),getState:()=>saved.value,setState:v=>saved.value=v}),document,window:{innerWidth:400,innerHeight:600,addEventListener:(t,f)=>winEvents[t]=f},setInterval:()=>1,clearInterval(){},setTimeout:()=>1,clearTimeout(){},Date,console};
   vm.createContext(context); vm.runInContext(fs.readFileSync('resources/dashboard.js','utf8'),context);
   const failedAt=Date.now();
-  const state={type:'state',codexAvailable:true,codexLastSync:Date.now(),codex:[{id:'c1',name:'批准任务',source:'vscode',status:'waiting',waitingReason:'approval',startTime:Date.now()},{id:'c2',name:'命令行任务',source:'cli',status:'failed',terminalId:'closed',terminalBindingConfidence:2,startTime:failedAt},{id:'c3',name:'独立失败',source:'cli',status:'failed',startTime:failedAt}],active:[{id:'a1',terminalId:'t1',terminalName:'zsh',name:'Task',type:'shell',status:'quiet',startTime:Date.now(),recentOutput:[]}],idle:[],history:Array.from({length:6},(_,i)=>({id:`h${i}`,terminalId:'closed',terminalName:'old',name:'Task',type:'shell',status:i?'completed':'failed',startTime:failedAt,recentOutput:[]}))};
+  const state={type:'state',codexAvailable:true,codexLastSync:Date.now(),codexScope:'当前工作区',paginationIncomplete:false,codex:[{id:'c1',name:'批准任务',source:'vscode',status:'waiting',waitingReason:'approval',startTime:Date.now()},{id:'c2',name:'命令行任务',source:'cli',status:'failed',terminalId:'closed',terminalBindingConfidence:2,startTime:failedAt},{id:'c3',name:'独立失败',source:'cli',status:'failed',startTime:failedAt}],active:[{id:'a1',terminalId:'t1',terminalName:'zsh',name:'Task',type:'shell',status:'quiet',startTime:Date.now(),recentOutput:[]}],idle:[],history:Array.from({length:6},(_,i)=>({id:`h${i}`,terminalId:'closed',terminalName:'old',name:'Task',type:'shell',status:i?'completed':'failed',startTime:failedAt,recentOutput:[]}))};
   winEvents.message({data:state});
   assert.equal(els.running.textContent,'1'); assert.equal(els.waiting.textContent,'1'); assert.equal(els.failed.textContent,'2');
+  assert.equal(els.codexHint.textContent,'当前工作区 · 实时状态');
   assert.match(els.codex.children[0].innerHTML,/status waiting/);
   const row=els.active.children[0]; assert.equal(row.dataset.id,'a1'); assert.equal(row.getAttribute('role'),'button');
   const key=row.listeners.keydown[0]; let prevented=false; key({key:'Enter',preventDefault(){prevented=true}}); assert.equal(prevented,true); assert.equal(messages.at(-1).terminalId,'t1');
@@ -40,6 +41,8 @@ test('dashboard counts, keyed rows, keyboard activation and collapse state', () 
   const renderCount=messages.filter(x=>x.type==='rendered').length;
   winEvents.message({data:{...state,codexLastSync:state.codexLastSync+10000}});
   assert.equal(messages.filter(x=>x.type==='rendered').length,renderCount);
+  winEvents.message({data:{...state,codexScope:'全部会话',paginationIncomplete:true}});
+  assert.equal(els.codexHint.textContent,'全部会话 · 实时状态 · 会话列表未完整加载');
   assert.equal(els.history.children.length,5); assert.equal(els.historyMore.hidden,false);
   els.historyMore.click(); assert.equal(els.history.children.length,6);
   sections.find(x=>x.dataset.sectionToggle==='active').listeners.click[0](); assert.ok(saved.value.collapsedSections.includes('active'));

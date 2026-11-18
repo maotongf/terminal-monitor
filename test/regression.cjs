@@ -2,7 +2,10 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const Module = require('node:module');
 const originalLoad = Module._load;
-const vscode = { window: { activeTerminal: undefined }, workspace: {} };
+const vscode = {
+  window: { activeTerminal: undefined },
+  workspace: { workspaceFolders: [], getConfiguration: () => ({ get: (_key, fallback) => fallback }) }
+};
 Module._load = function(request, parent, isMain) {
   if (request === 'vscode') return vscode;
   return originalLoad.call(this, request, parent, isMain);
@@ -11,6 +14,18 @@ const { DashboardProvider } = require('../dist/ui/dashboardProvider');
 const { CodexMonitor } = require('../dist/codex/codexMonitor');
 const { AppServerClient } = require('../dist/codex/appServerClient');
 Module._load = originalLoad;
+
+function bareCodexMonitor(client, diagnostic = () => {}) {
+  const monitor = Object.create(CodexMonitor.prototype);
+  Object.assign(monitor, {
+    client, polling: false, started: false, refreshRequested: false, available: false,
+    failureCount: 0, tasks: [], lastSnapshot: '', lastConnectionState: undefined,
+    lastPollMetricsSnapshot: '', recentTaskCache: new Map(), recentReplyCache: new Map(),
+    notificationStates: new Map(), notifiedCodexTransitions: new Set(),
+    notificationBaselineReady: false, onChange: () => {}, diagnostic
+  });
+  return monitor;
+}
 
 test('same-folder tasks remain visible; strong title match replaces fallback', () => {
   const a = { id: 'a', name: 'shell', cwd: '/p', terminal: {}, createdAt: 1 };
@@ -301,6 +316,63 @@ test('Codex connection retry backs off and resets after recovery', async () => {
   assert.equal(monitor.isAvailable(), true);
   assert.equal(monitor.failureCount, 0);
   assert.equal(monitor.nextPollDelayMs(), 3000);
+});
+
+test('Codex thread polling follows cursor pages and retains sessions after the first 100', async () => {
+  const now = Date.now();
+  const olderRows = Array.from({ length: 100 }, (_, index) => ({
+    id: `old-${index}`, updatedAt: now - 2 * 60 * 60 * 1000, source: 'cli', status: { type: 'idle', activeFlags: [] }
+  }));
+  const finalActive = { id: 'active-page-2', updatedAt: now, source: 'vscode', status: { type: 'active', activeFlags: [] } };
+  const calls = [];
+  vscode.workspace.workspaceFolders = [{ uri: { fsPath: '/workspace/project' } }];
+  vscode.workspace.getConfiguration = () => ({ get: (_key, fallback) => fallback });
+  const monitor = bareCodexMonitor({ request: async (method, params) => {
+    calls.push({ method, params });
+    if (method === 'thread/list') {
+      return params.cursor
+        ? { data: [finalActive], nextCursor: null }
+        : { data: olderRows, nextCursor: 'opaque-next-cursor' };
+    }
+    return { data: [{ id: 'turn-current', status: 'inProgress', startedAt: now - 1000 }] };
+  } });
+
+  await monitor.poll();
+  const pages = calls.filter(call => call.method === 'thread/list');
+  assert.equal(pages.length, 2);
+  assert.equal(pages[0].params.limit, 100);
+  assert.equal(pages[0].params.cwd[0], '/workspace/project');
+  assert.equal(pages[1].params.cursor, 'opaque-next-cursor');
+  assert.equal(monitor.lastPollMetrics.threadListPages, 2);
+  assert.equal(monitor.getTasks()[0].id, 'active-page-2');
+  assert.equal(monitor.getScopeLabel(), '当前工作区');
+  vscode.workspace.workspaceFolders = [];
+});
+
+test('Codex scope defaults to all sessions without a workspace and supports all-session mode', () => {
+  let configuredScope = 'workspace';
+  vscode.workspace.workspaceFolders = [];
+  vscode.workspace.getConfiguration = () => ({ get: (_key, fallback) => configuredScope || fallback });
+  const monitor = bareCodexMonitor({ request: async () => ({ data: [], nextCursor: null }) });
+  assert.equal(monitor.getScopeLabel(), '全部会话 · 无工作区');
+
+  configuredScope = 'all';
+  vscode.workspace.workspaceFolders = [{ uri: { fsPath: '/workspace/project' } }];
+  assert.equal(monitor.getScopeLabel(), '全部会话');
+  configuredScope = 'workspace';
+  vscode.workspace.workspaceFolders = [];
+});
+
+test('Codex pagination cursor loops are surfaced instead of silently claiming completeness', async () => {
+  let pages = 0;
+  const monitor = bareCodexMonitor({ request: async method => {
+    if (method !== 'thread/list') return { data: [] };
+    pages++;
+    return { data: [{ id: `thread-${pages}`, updatedAt: Date.now() - 2 * 60 * 60 * 1000, status: { type: 'idle' } }], nextCursor: 'same-cursor' };
+  } });
+  await monitor.poll();
+  assert.equal(pages, 2);
+  assert.equal(monitor.getPaginationIncomplete(), true);
 });
 
 test('temporary disconnection retains tasks and recovery updates state', async () => {

@@ -278,9 +278,11 @@ function render() {
   updateList('codex', codex, codexNode);
   $('codexCount').textContent = `(${codex.length})`;
   if (!codex.length) $('codex').innerHTML = '<div class="empty">暂无 Codex 任务</div>';
-  $('codexHint').textContent = state.codexAvailable
-    ? (workingCodex.length ? 'Codex 实时状态' : '暂无活动任务')
+  const codexStatusHint = state.codexAvailable
+    ? (workingCodex.length ? '实时状态' : '暂无活动任务')
     : (codex.length ? '连接中断 · ' + (state.codexLastSync ? '上次同步 ' + timeAgo(state.codexLastSync) : '显示上次数据') : 'Codex 未连接');
+  $('codexHint').textContent = (state.codexScope || '当前工作区') + ' · ' + codexStatusHint +
+    (state.paginationIncomplete ? ' · 会话列表未完整加载' : '');
 
   updateList('active', active, (task, node) => taskNode(task, false, node));
   updateList('idle', idle, (task, node) => taskNode(task, false, node));

@@ -40,6 +40,7 @@ interface ThreadItemRow {
 
 interface ListResult<T> {
   data?: T[];
+  nextCursor?: string | null;
 }
 
 const POLL_INTERVAL_MS = 3000;
@@ -64,6 +65,7 @@ interface TaskReadResult {
 }
 
 interface PollMetrics {
+  threadListPages: number;
   activeThreads: number;
   recentThreads: number;
   recentCacheHits: number;
@@ -77,6 +79,7 @@ export class CodexMonitor implements vscode.Disposable {
   private readonly client: AppServerClient;
   private timer?: ReturnType<typeof setTimeout>;
   private started = false;
+  private refreshRequested = false;
   private polling = false;
   private failureCount = 0;
   private available = false;
@@ -87,6 +90,8 @@ export class CodexMonitor implements vscode.Disposable {
   private lastPollMetricsSnapshot = '';
   private lastPollMetrics?: PollMetrics;
   private recentTaskCache = new Map<string, CachedRecentTask>();
+  private scopeLabel?: string;
+  private paginationIncomplete = false;
   private recentReplyCache = new Map<string, { expiresAt: number; reply?: string }>();
   private recentReplyRequests = new Map<string, Promise<string | undefined>>();
   private notificationStates = new Map<string, { status: CodexTaskStatus; waitingReason?: CodexTask['waitingReason'] }>();
@@ -113,6 +118,22 @@ export class CodexMonitor implements vscode.Disposable {
   getTasks(): CodexTask[] { return this.tasks; }
   isAvailable(): boolean { return this.available; }
   getLastSync(): number | undefined { return this.lastSync; }
+  getScopeLabel(): string { return this.scopeLabel ?? this.resolveScopeInfo().label; }
+  getPaginationIncomplete(): boolean { return this.paginationIncomplete; }
+
+  refresh(): void {
+    if (!this.started) return;
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = undefined;
+    }
+    if (this.polling) {
+      this.refreshRequested = true;
+      return;
+    }
+    this.refreshRequested = false;
+    void this.pollAndSchedule();
+  }
 
   async getRecentReply(threadId: string, turnId: string): Promise<string | undefined> {
     if (!this.available || !turnId || !this.tasks.some(task => task.id === threadId && task.turnId === turnId)) return undefined;
@@ -136,21 +157,24 @@ export class CodexMonitor implements vscode.Disposable {
   private async poll(): Promise<void> {
     if (this.polling) return;
     this.polling = true;
+    const previousScopeLabel = this.scopeLabel;
+    const previousPaginationIncomplete = this.paginationIncomplete;
     const metrics: PollMetrics = {
-      activeThreads: 0, recentThreads: 0, recentCacheHits: 0,
+      threadListPages: 0, activeThreads: 0, recentThreads: 0, recentCacheHits: 0,
       turnRequests: 0, turnReadFailures: 0, turnReadsInFlight: 0, maxConcurrentTurnReads: 0
     };
     try {
-      const folders = vscode.workspace.workspaceFolders?.map(folder => folder.uri.fsPath).filter(Boolean) ?? [];
+      const scopeInfo = this.resolveScopeInfo();
+      this.scopeLabel = scopeInfo.label;
+      this.paginationIncomplete = false;
       const params: Record<string, unknown> = {
         limit: 100,
         sortKey: 'recency_at',
         sourceKinds: ['vscode', 'cli', 'exec']
       };
-      if (folders.length) params.cwd = folders;
+      if (scopeInfo.folders.length) params.cwd = scopeInfo.folders;
 
-      const result = await this.client.request<ListResult<ThreadRow>>('thread/list', params);
-      const rows = Array.isArray(result?.data) ? result.data : [];
+      const rows = await this.listAllThreads(params, metrics);
       const now = Date.now();
       const activeRows = rows.filter(row => row.status?.type === 'active');
       const recentRows = rows
@@ -198,10 +222,14 @@ export class CodexMonitor implements vscode.Disposable {
       this.reportPollMetrics(metrics, true);
     } catch {
       const connectionChanged = this.available;
+      this.scopeLabel = this.resolveScopeInfo().label;
+      const scopeChanged = previousScopeLabel !== undefined && previousScopeLabel !== this.scopeLabel;
+      if (metrics.threadListPages > 1) this.paginationIncomplete = true;
+      const paginationChanged = previousPaginationIncomplete !== this.paginationIncomplete;
       this.available = false;
       this.failureCount++;
       this.reportConnectionState('unavailable');
-      if (connectionChanged) this.onChange();
+      if (connectionChanged || scopeChanged || paginationChanged) this.onChange();
       this.reportPollMetrics(metrics, false);
     } finally {
       this.polling = false;
@@ -212,6 +240,11 @@ export class CodexMonitor implements vscode.Disposable {
     if (!this.started) return;
     await this.poll();
     if (!this.started) return;
+    if (this.refreshRequested) {
+      this.refreshRequested = false;
+      void this.pollAndSchedule();
+      return;
+    }
     this.timer = setTimeout(() => {
       this.timer = undefined;
       void this.pollAndSchedule();
@@ -221,6 +254,46 @@ export class CodexMonitor implements vscode.Disposable {
   private nextPollDelayMs(): number {
     if (this.available) return POLL_INTERVAL_MS;
     return Math.min(POLL_INTERVAL_MS * (2 ** Math.max(1, this.failureCount)), MAX_POLL_BACKOFF_MS);
+  }
+
+  private resolveScopeInfo(): { folders: string[]; label: string } {
+    const folders = vscode.workspace.workspaceFolders?.map(folder => folder.uri.fsPath).filter(Boolean) ?? [];
+    const configuredScope = vscode.workspace.getConfiguration('terminalMonitor').get<'workspace' | 'all'>('codexScope', 'workspace');
+    if (!folders.length) return { folders: [], label: '全部会话 · 无工作区' };
+    if (configuredScope === 'all') return { folders: [], label: '全部会话' };
+    return { folders, label: '当前工作区' };
+  }
+
+  private async listAllThreads(params: Record<string, unknown>, metrics: PollMetrics): Promise<ThreadRow[]> {
+    const rows: ThreadRow[] = [];
+    const seenIds = new Set<string>();
+    const seenCursors = new Set<string>();
+    let cursor: string | undefined;
+
+    while (true) {
+      metrics.threadListPages++;
+      const result = await this.client.request<ListResult<ThreadRow>>('thread/list', {
+        ...params,
+        ...(cursor ? { cursor } : {})
+      });
+      for (const row of Array.isArray(result?.data) ? result.data : []) {
+        if (!row.id || seenIds.has(row.id)) continue;
+        seenIds.add(row.id);
+        rows.push(row);
+      }
+
+      const nextCursor = result?.nextCursor || undefined;
+      if (!nextCursor) break;
+      if (seenCursors.has(nextCursor)) {
+        this.paginationIncomplete = true;
+        this.diagnostic('Codex thread/list repeated a pagination cursor; some sessions may not be shown.');
+        break;
+      }
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
+    }
+
+    return rows;
   }
 
   private getCachedRecentTask(thread: ThreadRow): CodexTask | undefined {
@@ -247,11 +320,11 @@ export class CodexMonitor implements vscode.Disposable {
 
   private reportPollMetrics(metrics: PollMetrics, success: boolean): void {
     this.lastPollMetrics = { ...metrics };
-    const snapshot = `${success}:${metrics.activeThreads}:${metrics.recentThreads}:${metrics.recentCacheHits}:${metrics.turnRequests}:${metrics.turnReadFailures}:${metrics.maxConcurrentTurnReads}`;
+    const snapshot = `${success}:${metrics.threadListPages}:${metrics.activeThreads}:${metrics.recentThreads}:${metrics.recentCacheHits}:${metrics.turnRequests}:${metrics.turnReadFailures}:${metrics.maxConcurrentTurnReads}`;
     if (snapshot === this.lastPollMetricsSnapshot) return;
     this.lastPollMetricsSnapshot = snapshot;
     this.diagnostic(
-      `Codex poll ${success ? 'succeeded' : 'failed'}: threadList=1, active=${metrics.activeThreads}, ` +
+      `Codex poll ${success ? 'succeeded' : 'failed'}: threadListPages=${metrics.threadListPages}, active=${metrics.activeThreads}, ` +
       `recent=${metrics.recentThreads}, recentCacheHits=${metrics.recentCacheHits}, ` +
       `turnReads=${metrics.turnRequests}, turnReadFailures=${metrics.turnReadFailures}, ` +
       `peakTurnConcurrency=${metrics.maxConcurrentTurnReads}.`
@@ -346,7 +419,7 @@ export class CodexMonitor implements vscode.Disposable {
     for (const key of this.recentReplyCache.keys()) {
       if (!activeTurns.has(key)) this.recentReplyCache.delete(key);
     }
-    const snapshot = JSON.stringify({ available: this.available, tasks });
+    const snapshot = JSON.stringify({ available: this.available, scope: this.getScopeLabel(), paginationIncomplete: this.paginationIncomplete, tasks });
     if (snapshot === this.lastSnapshot) return;
     this.lastSnapshot = snapshot;
     this.tasks = tasks;
