@@ -52,6 +52,7 @@ export type CodexTaskStatus = 'running' | 'waiting' | 'completed' | 'failed' | '
 
 export interface CodexTask {
   id: string;
+  turnId?: string;
   terminalId?: string;
   terminalBindingConfidence?: number;
   name: string;
@@ -63,4 +64,5 @@ export interface CodexTask {
   endTime?: number;
   updatedAt: number;
   currentStep?: string;
+  recentReply?: string;
 }

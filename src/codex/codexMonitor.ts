@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { CodexTask, CodexTaskStatus } from '../core/types';
 import { AppServerClient } from './appServerClient';
+import { extractRecentReply } from './recentReply';
 
 interface ThreadRow {
   id: string;
@@ -21,10 +22,20 @@ interface TurnItem {
 }
 
 interface TurnRow {
+  id?: string;
   status?: string;
   startedAt?: number | string;
   completedAt?: number | string;
   items?: Array<{ item?: TurnItem } | TurnItem>;
+}
+
+interface ThreadItemRow {
+  item?: {
+    type?: string;
+    phase?: string | null;
+    text?: string | null;
+    moderation?: { moderated?: boolean | null } | null;
+  };
 }
 
 interface ListResult<T> {
@@ -34,6 +45,10 @@ interface ListResult<T> {
 const POLL_INTERVAL_MS = 3000;
 const RECENT_WINDOW_MS = 60 * 60 * 1000;
 const RECENT_TASK_LIMIT = 5;
+const RECENT_REPLY_LIMIT = 10;
+const RECENT_REPLY_CACHE_LIMIT = 100;
+const RECENT_REPLY_CACHE_TTL_MS = 60_000;
+const EMPTY_REPLY_CACHE_TTL_MS = 2_000;
 
 export class CodexMonitor implements vscode.Disposable {
   private readonly client: AppServerClient;
@@ -44,6 +59,8 @@ export class CodexMonitor implements vscode.Disposable {
   private tasks: CodexTask[] = [];
   private lastSnapshot = '';
   private lastConnectionState: 'connected' | 'unavailable' | undefined;
+  private recentReplyCache = new Map<string, { expiresAt: number; reply?: string }>();
+  private recentReplyRequests = new Map<string, Promise<string | undefined>>();
   private onChange: () => void = () => undefined;
 
   constructor(
@@ -63,6 +80,25 @@ export class CodexMonitor implements vscode.Disposable {
   getTasks(): CodexTask[] { return this.tasks; }
   isAvailable(): boolean { return this.available; }
   getLastSync(): number | undefined { return this.lastSync; }
+
+  async getRecentReply(threadId: string, turnId: string): Promise<string | undefined> {
+    if (!this.available || !turnId || !this.tasks.some(task => task.id === threadId && task.turnId === turnId)) return undefined;
+    const key = `${threadId}:${turnId}`;
+    const cached = this.recentReplyCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) return cached.reply;
+    if (cached) this.recentReplyCache.delete(key);
+
+    const pending = this.recentReplyRequests.get(key);
+    if (pending) return pending;
+
+    const request = this.fetchRecentReply(threadId, turnId, key);
+    this.recentReplyRequests.set(key, request);
+    try {
+      return await request;
+    } finally {
+      this.recentReplyRequests.delete(key);
+    }
+  }
 
   private async poll(): Promise<void> {
     if (this.polling) return;
@@ -130,6 +166,7 @@ export class CodexMonitor implements vscode.Disposable {
 
     return {
       id: thread.id,
+      turnId: turn?.id,
       name: name.slice(0, 140),
       cwd: thread.cwd || undefined,
       source: thread.source || 'codex',
@@ -142,6 +179,35 @@ export class CodexMonitor implements vscode.Disposable {
     };
   }
 
+  private async fetchRecentReply(threadId: string, turnId: string, cacheKey: string): Promise<string | undefined> {
+    let reply: string | undefined;
+    try {
+      const result = await this.client.request<ListResult<ThreadItemRow>>('thread/items/list', {
+        threadId,
+        turnId,
+        limit: RECENT_REPLY_LIMIT,
+        sortDirection: 'desc',
+        deferOutput: { commandExecution: true, mcpToolCall: true }
+      });
+      reply = extractRecentReply(Array.isArray(result?.data) ? result.data : []);
+    } catch {
+      // Keep the hover compact when history is unavailable; the next hover may retry.
+    }
+
+    if (!this.tasks.some(task => task.id === threadId && task.turnId === turnId)) return undefined;
+    this.recentReplyCache.delete(cacheKey);
+    this.recentReplyCache.set(cacheKey, {
+      reply,
+      expiresAt: Date.now() + (reply ? RECENT_REPLY_CACHE_TTL_MS : EMPTY_REPLY_CACHE_TTL_MS)
+    });
+    while (this.recentReplyCache.size > RECENT_REPLY_CACHE_LIMIT) {
+      const oldestKey = this.recentReplyCache.keys().next().value;
+      if (oldestKey === undefined) break;
+      this.recentReplyCache.delete(oldestKey);
+    }
+    return reply;
+  }
+
   private reportConnectionState(state: 'connected' | 'unavailable'): void {
     if (state === this.lastConnectionState) return;
     this.lastConnectionState = state;
@@ -151,6 +217,10 @@ export class CodexMonitor implements vscode.Disposable {
   }
 
   private updateTasks(tasks: CodexTask[]): void {
+    const activeTurns = new Set(tasks.filter(task => task.turnId).map(task => `${task.id}:${task.turnId}`));
+    for (const key of this.recentReplyCache.keys()) {
+      if (!activeTurns.has(key)) this.recentReplyCache.delete(key);
+    }
     const snapshot = JSON.stringify({ available: this.available, tasks });
     if (snapshot === this.lastSnapshot) return;
     this.lastSnapshot = snapshot;

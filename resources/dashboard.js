@@ -4,6 +4,8 @@ let showTimer = null;
 let hideTimer = null;
 let activeTooltipTask = null;
 let lastStateSnapshot = '';
+const codexReplies = new Map();
+const codexReplyRequestedAt = new Map();
 const collapsedSections = new Set(vscode.getState()?.collapsedSections || []);
 let showAllHistory = false;
 const $ = id => document.getElementById(id);
@@ -58,7 +60,25 @@ function activateByKeyboard(event, el) {
 }
 
 function latestTask(id, fallback) {
-  return [...(state.codex || []), ...(state.active || []), ...(state.idle || []), ...(state.history || [])].find(item => item.id === id) || fallback;
+  const task = [...(state.codex || []), ...(state.active || []), ...(state.idle || []), ...(state.history || [])].find(item => item.id === id) || fallback;
+  if (task && typeof task.source === 'string' && !task.recentReply) {
+    const reply = codexReplies.get(codexReplyKey(task));
+    if (reply) return { ...task, recentReply: reply };
+  }
+  return task;
+}
+
+function codexReplyKey(task) {
+  return `${task.id}:${task.turnId || ''}`;
+}
+
+function requestCodexReply(task) {
+  if (!task.turnId || task.recentReply || task.status === 'running' || task.status === 'waiting') return;
+  const key = codexReplyKey(task);
+  const now = Date.now();
+  if (now - (codexReplyRequestedAt.get(key) || 0) < 3000) return;
+  codexReplyRequestedAt.set(key, now);
+  vscode.postMessage({ type: 'loadCodexReply', taskId: task.id, turnId: task.turnId });
 }
 
 function attachTooltip(el) {
@@ -111,6 +131,7 @@ function showTooltip(task, el) {
   const selection = captureTooltipSelection(tip);
   const rect = el.getBoundingClientRect();
   const isCodex = typeof task.source === 'string';
+  if (isCodex) requestCodexReply(task);
   const title = isCodex ? task.name : (task.terminalName || task.name);
   const statusText = label(task.status, task);
   const elapsed = task.status === 'idle' || task.status === 'unknown' || !task.startTime ? '' : ' · <span class="tipDuration" data-start="' + task.startTime + '" data-end="' + (task.endTime || '') + '">' + esc(duration(task)) + '</span>';
@@ -120,6 +141,7 @@ function showTooltip(task, el) {
   if (isCodex) {
     // These fields come from the Codex thread and turn response, not terminal output.
     if (task.currentStep) body += '<div style="margin-top:8px">' + esc(task.currentStep) + '</div>';
+    if (task.recentReply) body += '<div class="tiplabel">最近回复</div><div class="logs reply">' + esc(task.recentReply) + '</div>';
     body += '<div class="tipmeta">Codex' + (task.updatedAt ? ' · 更新于 <span class="tipUpdated" data-updated="' + task.updatedAt + '">' + esc(timeAgo(task.updatedAt)) + '</span>' : '') + '</div>';
     body += '<div class="tipmeta">右键任务可更换关联终端</div>';
   } else {
@@ -281,11 +303,37 @@ function render() {
 window.addEventListener('error', event => vscode.postMessage({ type: 'webviewError', message: event.message || 'script error' }));
 window.addEventListener('unhandledrejection', event => vscode.postMessage({ type: 'webviewError', message: String(event.reason || 'unhandled rejection') }));
 window.addEventListener('message', event => {
+  if (event.data?.type === 'codexReply') {
+    const { taskId, turnId, reply } = event.data;
+    const task = (state.codex || []).find(item => item.id === taskId && item.turnId === turnId);
+    if (!task) return;
+    const key = codexReplyKey(task);
+    if (typeof reply === 'string' && reply.trim()) {
+      codexReplies.set(key, reply);
+      task.recentReply = reply;
+    } else {
+      codexReplies.delete(key);
+      delete task.recentReply;
+    }
+    if (activeTooltipTask?.id === taskId) {
+      const node = [...document.querySelectorAll('.task')].find(item => item.dataset.id === taskId);
+      if (node) showTooltip(task, node);
+    }
+    return;
+  }
   if (event.data?.type !== 'state') return;
   const snapshot = JSON.stringify({ ...event.data, codexLastSync: event.data.codexAvailable ? undefined : event.data.codexLastSync });
   if (snapshot === lastStateSnapshot) return;
   lastStateSnapshot = snapshot;
   state = event.data;
+  const liveReplyKeys = new Set((state.codex || []).map(task => {
+    const key = codexReplyKey(task);
+    const reply = codexReplies.get(key);
+    if (reply) task.recentReply = reply;
+    return key;
+  }));
+  for (const key of codexReplies.keys()) if (!liveReplyKeys.has(key)) codexReplies.delete(key);
+  for (const key of codexReplyRequestedAt.keys()) if (!liveReplyKeys.has(key)) codexReplyRequestedAt.delete(key);
   render();
   vscode.postMessage({ type: 'rendered', active: state.active?.length, idle: state.idle?.length, history: state.history?.length, codex: state.codex?.length });
 });

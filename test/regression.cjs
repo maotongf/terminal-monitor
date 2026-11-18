@@ -89,7 +89,7 @@ test('idle terminal count excludes VS Code terminals hidden from the user', () =
 
 test('temporary disconnection retains tasks and recovery updates state', async () => {
   const p = Object.create(CodexMonitor.prototype);
-  p.polling = false; p.available = true; p.tasks = [{ id:'old' }]; p.diagnostic=()=>{}; p.onChange=()=>{};
+  p.polling = false; p.available = true; p.tasks = [{ id:'old' }]; p.recentReplyCache = new Map(); p.recentReplyRequests = new Map(); p.diagnostic=()=>{}; p.onChange=()=>{};
   p.client = { request: async () => { throw Error('offline'); } };
   await p.poll(); assert.equal(p.available, false); assert.equal(p.tasks[0].id, 'old');
   p.client = { request: async () => ({ data: [] }) };
@@ -120,6 +120,31 @@ test('Codex turn timing and waiting reasons use server data', async () => {
   assert.equal(task.waitingReason, 'approval');
   thread.status.activeFlags = ['waitingOnExternalTool']; task = await p.readTask(thread);
   assert.equal(task.waitingReason, 'tool');
+});
+
+test('recent Codex reply is fetched only for the requested turn and cached', async () => {
+  const monitor = Object.create(CodexMonitor.prototype);
+  monitor.available = true;
+  monitor.tasks = [{ id: 'thread-1', turnId: 'turn-a' }];
+  monitor.recentReplyCache = new Map();
+  monitor.recentReplyRequests = new Map();
+  let calls = 0;
+  let request;
+  monitor.client = { request: async (method, params) => {
+    calls++;
+    request = { method, params };
+    return { data: [{ item: { type: 'agentMessage', phase: 'final_answer', text: 'A concise answer.' } }] };
+  } };
+
+  assert.equal(await monitor.getRecentReply('thread-1', 'turn-a'), 'A concise answer.');
+  assert.equal(await monitor.getRecentReply('thread-1', 'turn-a'), 'A concise answer.');
+  assert.equal(await monitor.getRecentReply('thread-1', 'old-turn'), undefined);
+  assert.equal(calls, 1);
+  assert.equal(request.method, 'thread/items/list');
+  assert.deepEqual(request.params, {
+    threadId: 'thread-1', turnId: 'turn-a', limit: 10, sortDirection: 'desc',
+    deferOutput: { commandExecution: true, mcpToolCall: true }
+  });
 });
 
 test('cumulative oversized fragments destroy socket', () => {

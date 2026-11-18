@@ -44,3 +44,29 @@ test('dashboard counts, keyed rows, keyboard activation and collapse state', () 
   els.historyMore.click(); assert.equal(els.history.children.length,6);
   sections.find(x=>x.dataset.sectionToggle==='active').listeners.click[0](); assert.ok(saved.value.collapsedSections.includes('active'));
 });
+
+test('Codex hover shows escaped final reply and requests missing reply on demand', () => {
+  const ids=['tooltip','running','waiting','failed','connectionStatus','codex','codexContent','codexCount','codexHint','active','activeContent','activeCount','idle','idleContent','idleCount','history','historyContent','historyCount','historyMore','summary','syncLabel'];
+  const els=Object.fromEntries(ids.map(id=>[id,new Element(id)]));
+  const sections=['codex','active','idle','history'].map(id=>{const e=new Element(id);e.dataset.sectionToggle=id;e.listeners={};e.querySelector=()=>new Element('chevron');return e;});
+  const winEvents={}; const messages=[];
+  const document={getElementById:id=>els[id],createElement:()=>new Element(),querySelectorAll:q=>q==='[data-section-toggle]'?sections:q==='.task'?['codex','active','idle','history'].flatMap(id=>els[id].children):[],querySelector:q=>q==='.task:hover'?null:q.startsWith('[data-section-toggle=')?sections.find(x=>q.includes(x.dataset.sectionToggle)):null};
+  const context={acquireVsCodeApi:()=>({postMessage:m=>messages.push(m),getState:()=>({}),setState(){}}),document,window:{innerWidth:400,innerHeight:600,addEventListener:(t,f)=>winEvents[t]=f},setInterval:()=>1,clearInterval(){},setTimeout:()=>1,clearTimeout(){},Date,console};
+  vm.createContext(context); vm.runInContext(fs.readFileSync('resources/dashboard.js','utf8'),context);
+  winEvents.message({data:{type:'state',codexAvailable:true,codexLastSync:Date.now(),codex:[
+    {id:'reply',turnId:'turn-1',name:'Completed task',source:'vscode',status:'completed',startTime:1,recentReply:'Done <safely>'},
+    {id:'pending',turnId:'turn-2',name:'Finished task',source:'cli',status:'completed',startTime:Date.now()},
+    {id:'running',turnId:'turn-3',name:'Running task',source:'vscode',status:'running',startTime:Date.now()}
+  ],active:[],idle:[],history:[]}});
+
+  const withReply=els.codex.children.find(row=>row.dataset.id==='reply');
+  withReply.listeners.focus[0]();
+  assert.match(els.tooltip.innerHTML,/最近回复/);
+  assert.match(els.tooltip.innerHTML,/Done &lt;safely&gt;/);
+  const withoutReply=els.codex.children.find(row=>row.dataset.id==='pending');
+  withoutReply.listeners.focus[0]();
+  assert.ok(messages.some(message=>message.type==='loadCodexReply' && message.taskId==='pending' && message.turnId==='turn-2'));
+  const running=els.codex.children.find(row=>row.dataset.id==='running');
+  running.listeners.focus[0]();
+  assert.equal(messages.some(message=>message.type==='loadCodexReply' && message.taskId==='running'),false);
+});
