@@ -215,6 +215,17 @@ function timeAgo(timestamp) {
   return `${Math.floor(seconds / 86400)} 天前`;
 }
 
+function updateConnectionStatus() {
+  const connection = $('connectionStatus');
+  if (!connection) return;
+  connection.textContent = state.codexAvailable
+    ? '已连接'
+    : ((state.codex || []).length
+      ? '连接中断 · ' + (state.codexLastSync ? '上次同步 ' + timeAgo(state.codexLastSync) : '显示上次数据')
+      : 'Codex 未连接');
+  connection.style.color = state.codexAvailable ? 'var(--green)' : 'var(--yellow)';
+}
+
 function setSectionCollapsed(id, collapsed) {
   const button = document.querySelector(`[data-section-toggle="${id}"]`);
   const body = $(`${id}Content`);
@@ -255,8 +266,7 @@ function render() {
   const idle = state.idle || [];
   const history = state.history || [];
   const workingCodex = codex.filter(task => task.status === 'running' || task.status === 'waiting');
-  $('connectionStatus').textContent = state.codexAvailable ? '已连接' : 'Codex 未连接';
-  $('connectionStatus').style.color = state.codexAvailable ? 'var(--green)' : 'var(--yellow)';
+  updateConnectionStatus();
 
   $('running').textContent = active.filter(task => task.status === 'running' || task.status === 'quiet').length + codex.filter(task => task.status === 'running').length;
   $('waiting').textContent = codex.filter(task => task.status === 'waiting' && task.waitingReason !== 'tool').length;
@@ -363,5 +373,6 @@ setInterval(() => {
     element.textContent=hours?`${hours}小时 ${minutes}分钟`:`${minutes}分${String(remainder).padStart(2,'0')}秒`;
   });
   document.querySelectorAll('.tipUpdated[data-updated]').forEach(element => { element.textContent=timeAgo(Number(element.dataset.updated)); });
+  updateConnectionStatus();
 }, 1000);
 vscode.postMessage({ type: 'ready' });

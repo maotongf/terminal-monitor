@@ -2,7 +2,7 @@
   "name": "terminal-monitor",
   "displayName": "Terminal Monitor",
   "description": "A compact, real-time monitor for VS Code integrated terminals and AI coding agents.",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "publisher": "local-test-publisher",
   "license": "MIT",
   "engines": { "vscode": "^1.93.0" },

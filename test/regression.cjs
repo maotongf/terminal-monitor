@@ -87,6 +87,93 @@ test('idle terminal count excludes VS Code terminals hidden from the user', () =
   assert.deepEqual(state.idle.map(task => task.terminalId), ['visible']);
 });
 
+test('dashboard skips unchanged and hidden state pushes, then sends the latest state on reveal', () => {
+  const terminal = { id: 'visible', name: 'zsh', terminal: {}, createdAt: 1, shellIntegrationAvailable: true };
+  const provider = Object.create(DashboardProvider.prototype);
+  let visible = true;
+  const messages = [];
+  provider.tasks = {
+    getTerminals: () => [terminal], getActiveTasks: () => [], getHistory: () => [],
+    getTerminalInfo: () => terminal, getTerminalById: id => id === terminal.id ? terminal : undefined
+  };
+  provider.codex = { getTasks: () => [], isAvailable: () => true, getLastSync: () => 1 };
+  provider.codexTerminalBindings = new Map();
+  provider.terminalActivity = new Map();
+  provider.terminalOrder = new Map();
+  provider.lastPostedStateSnapshot = '';
+  provider.lastPostCounts = '';
+  provider.diagnostic = () => {};
+  provider.view = {
+    get visible() { return visible; },
+    webview: { postMessage: message => { messages.push(message); return Promise.resolve(true); } }
+  };
+
+  provider.postState();
+  provider.postState();
+  assert.equal(messages.length, 1);
+
+  visible = false;
+  terminal.name = 'bash';
+  provider.postState();
+  assert.equal(messages.length, 1);
+
+  visible = true;
+  provider.postState();
+  assert.equal(messages.length, 2);
+  assert.equal(messages[1].idle[0].terminalName, 'bash');
+});
+
+test('dashboard retries unchanged state after the webview rejects a post', async () => {
+  const provider = Object.create(DashboardProvider.prototype);
+  let accepted = false;
+  let posts = 0;
+  provider.tasks = { getTerminals: () => [], getActiveTasks: () => [], getHistory: () => [] };
+  provider.codex = { getTasks: () => [], isAvailable: () => true, getLastSync: () => 1 };
+  provider.codexTerminalBindings = new Map();
+  provider.terminalActivity = new Map();
+  provider.terminalOrder = new Map();
+  provider.lastPostedStateSnapshot = '';
+  provider.lastPostCounts = '';
+  provider.diagnostic = () => {};
+  provider.view = { visible: true, webview: { postMessage: () => { posts++; return Promise.resolve(accepted); } } };
+
+  provider.postState();
+  await Promise.resolve();
+  assert.equal(provider.lastPostedStateSnapshot, '');
+
+  accepted = true;
+  provider.postState();
+  await Promise.resolve();
+  assert.equal(posts, 2);
+  assert.notEqual(provider.lastPostedStateSnapshot, '');
+});
+
+test('Codex polling only signals changed data or connection state', async () => {
+  const monitor = Object.create(CodexMonitor.prototype);
+  let changes = 0;
+  monitor.polling = false;
+  monitor.available = false;
+  monitor.tasks = [];
+  monitor.lastSnapshot = '';
+  monitor.lastConnectionState = undefined;
+  monitor.recentReplyCache = new Map();
+  monitor.notificationStates = new Map();
+  monitor.notifiedCodexTransitions = new Set();
+  monitor.notificationBaselineReady = false;
+  monitor.onChange = () => { changes++; };
+  monitor.diagnostic = () => {};
+  monitor.client = { request: async () => ({ data: [] }) };
+
+  await monitor.poll();
+  await monitor.poll();
+  assert.equal(changes, 1);
+
+  monitor.client = { request: async () => { throw new Error('offline'); } };
+  await monitor.poll();
+  await monitor.poll();
+  assert.equal(changes, 2);
+});
+
 test('temporary disconnection retains tasks and recovery updates state', async () => {
   const p = Object.create(CodexMonitor.prototype);
   p.polling = false; p.available = true; p.tasks = [{ id:'old' }]; p.recentReplyCache = new Map(); p.recentReplyRequests = new Map(); p.notificationStates = new Map(); p.notifiedCodexTransitions = new Set(); p.notificationBaselineReady = false; p.diagnostic=()=>{}; p.onChange=()=>{};

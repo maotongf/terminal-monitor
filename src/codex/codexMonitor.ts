@@ -136,9 +136,10 @@ export class CodexMonitor implements vscode.Disposable {
       this.reportConnectionState('connected');
       this.updateTasks(filtered);
     } catch {
+      const connectionChanged = this.available;
       this.available = false;
       this.reportConnectionState('unavailable');
-      this.onChange();
+      if (connectionChanged) this.onChange();
     } finally {
       this.polling = false;
     }

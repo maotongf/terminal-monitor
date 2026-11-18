@@ -6,14 +6,15 @@ import { CodexMonitor } from '../codex/codexMonitor';
 
 export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private view?: vscode.WebviewView;
+  private visibilitySubscription?: vscode.Disposable;
   private changeSubscription: vscode.Disposable;
-  private namePoll?: ReturnType<typeof setInterval>;
   private renderTimer?: ReturnType<typeof setTimeout>;
   private terminalOrder = new Map<string, number>();
   private terminalActivity = new Map<string, number>();
   private readonly codexTerminalBindings = new Map<string, { id: string; confidence: number }>();
   private activeTerminalSubscription: vscode.Disposable;
-  private lastPostSnapshot = '';
+  private lastPostedStateSnapshot = '';
+  private lastPostCounts = '';
   private lastRenderedSnapshot = '';
 
   constructor(
@@ -25,14 +26,16 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
     this.changeSubscription = tasks.onDidChange(() => this.schedulePostState());
     this.recordActiveTerminal(vscode.window.activeTerminal);
     this.activeTerminalSubscription = vscode.window.onDidChangeActiveTerminal(terminal => this.recordActiveTerminal(terminal));
-    this.namePoll = setInterval(() => {
-      this.syncTerminalNames();
-      this.postState();
-    }, 1000);
   }
 
   resolveWebviewView(view: vscode.WebviewView): void {
+    this.visibilitySubscription?.dispose();
     this.view = view;
+    this.visibilitySubscription = view.onDidChangeVisibility(() => {
+      if (!view.visible) return;
+      this.syncTerminalNames();
+      this.postState();
+    });
     this.diagnostic('Dashboard webview resolved.');
     view.webview.options = {
       enableScripts: true,
@@ -60,7 +63,6 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
         await this.chooseCodexTerminal(message.taskId);
       } else if (message?.type === 'ready' || message?.type === 'refresh') {
         this.diagnostic(`Dashboard message: ${message.type}.`);
-        this.syncTerminalNames();
         this.postState();
       } else if (message?.type === 'rendered') {
         const active = Number(message.active) || 0;
@@ -81,11 +83,11 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
   }
 
   refresh(): void {
-    this.syncTerminalNames();
     this.postState();
   }
 
   private schedulePostState(): void {
+    if (!this.view || !this.view.visible) return;
     if (this.renderTimer) return;
     this.renderTimer = setTimeout(() => { this.renderTimer = undefined; this.postState(); }, 300);
   }
@@ -97,7 +99,8 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
   private postState(): void {
     const codexSnapshot = this.codex.getTasks();
     this.pruneStaleMappings(codexSnapshot);
-    if (!this.view) return;
+    const view = this.view;
+    if (!view || view.visible === false) return;
     const terminals = this.tasks.getTerminals();
     terminals.forEach((terminal, index) => this.terminalOrder.set(terminal.id, index));
     const codexTasks: CodexTask[] = codexSnapshot.map(task => this.bindCodexTask(task));
@@ -119,16 +122,30 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
     const order = (a: DashboardTask, b: DashboardTask) => a.terminalOrder - b.terminalOrder;
     active.sort(order);
     idle.sort(order);
-    const snapshot = `${active.length}:${idle.length}:${history.length}`;
-    if (snapshot !== this.lastPostSnapshot) {
-      this.lastPostSnapshot = snapshot;
-      this.diagnostic(`Dashboard state queued: active=${active.length}, idle=${idle.length}, recent=${history.length}.`);
+    const codexAvailable = this.codex.isAvailable();
+    const state = {
+      type: 'state', active, idle, history, codex: codexTasks, codexAvailable,
+      // Successful poll timestamps advance every few seconds without changing visible data.
+      // The webview only needs this timestamp while disconnected.
+      codexLastSync: codexAvailable ? undefined : this.codex.getLastSync()
+    };
+    const snapshot = JSON.stringify(state);
+    if (snapshot === this.lastPostedStateSnapshot) return;
+    this.lastPostedStateSnapshot = snapshot;
+    const counts = `${active.length}:${idle.length}:${history.length}:${codexTasks.length}`;
+    if (counts !== this.lastPostCounts) {
+      this.lastPostCounts = counts;
+      this.diagnostic(`Dashboard state queued: codex=${codexTasks.length}, active=${active.length}, idle=${idle.length}, recent=${history.length}.`);
     }
-    void this.view.webview.postMessage({
-      type: 'state', active, idle, history, codex: codexTasks, codexAvailable: this.codex.isAvailable(), codexLastSync: this.codex.getLastSync()
-    }).then(accepted => {
-      if (!accepted) this.diagnostic('Dashboard state was not accepted by the webview.');
-    }, error => this.diagnostic(`Dashboard postMessage failed: ${String(error)}`));
+    void view.webview.postMessage(state).then(accepted => {
+      if (!accepted) {
+        if (this.lastPostedStateSnapshot === snapshot) this.lastPostedStateSnapshot = '';
+        this.diagnostic('Dashboard state was not accepted by the webview.');
+      }
+    }, error => {
+      if (this.lastPostedStateSnapshot === snapshot) this.lastPostedStateSnapshot = '';
+      this.diagnostic(`Dashboard postMessage failed: ${String(error)}`);
+    });
   }
 
   private toDashboard(task: Task): DashboardTask {
@@ -315,7 +332,7 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
   dispose(): void {
     this.changeSubscription.dispose();
     this.activeTerminalSubscription.dispose();
-    if (this.namePoll) clearInterval(this.namePoll);
+    this.visibilitySubscription?.dispose();
     if (this.renderTimer) clearTimeout(this.renderTimer);
   }
 }
