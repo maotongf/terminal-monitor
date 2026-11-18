@@ -43,6 +43,9 @@ interface ListResult<T> {
 }
 
 const POLL_INTERVAL_MS = 3000;
+const MAX_POLL_BACKOFF_MS = 60_000;
+const MAX_CONCURRENT_TURN_READS = 4;
+const RECENT_TASK_CACHE_LIMIT = 100;
 const RECENT_WINDOW_MS = 60 * 60 * 1000;
 const RECENT_TASK_LIMIT = 5;
 const RECENT_REPLY_LIMIT = 10;
@@ -50,15 +53,40 @@ const RECENT_REPLY_CACHE_LIMIT = 100;
 const RECENT_REPLY_CACHE_TTL_MS = 60_000;
 const EMPTY_REPLY_CACHE_TTL_MS = 2_000;
 
+interface CachedRecentTask {
+  fingerprint: string;
+  task: CodexTask;
+}
+
+interface TaskReadResult {
+  task?: CodexTask;
+  turnReadSucceeded: boolean;
+}
+
+interface PollMetrics {
+  activeThreads: number;
+  recentThreads: number;
+  recentCacheHits: number;
+  turnRequests: number;
+  turnReadFailures: number;
+  turnReadsInFlight: number;
+  maxConcurrentTurnReads: number;
+}
+
 export class CodexMonitor implements vscode.Disposable {
   private readonly client: AppServerClient;
-  private timer?: ReturnType<typeof setInterval>;
+  private timer?: ReturnType<typeof setTimeout>;
+  private started = false;
   private polling = false;
+  private failureCount = 0;
   private available = false;
   private lastSync?: number;
   private tasks: CodexTask[] = [];
   private lastSnapshot = '';
   private lastConnectionState: 'connected' | 'unavailable' | undefined;
+  private lastPollMetricsSnapshot = '';
+  private lastPollMetrics?: PollMetrics;
+  private recentTaskCache = new Map<string, CachedRecentTask>();
   private recentReplyCache = new Map<string, { expiresAt: number; reply?: string }>();
   private recentReplyRequests = new Map<string, Promise<string | undefined>>();
   private notificationStates = new Map<string, { status: CodexTaskStatus; waitingReason?: CodexTask['waitingReason'] }>();
@@ -77,8 +105,9 @@ export class CodexMonitor implements vscode.Disposable {
 
   start(onChange: () => void): void {
     this.onChange = onChange;
-    void this.poll();
-    this.timer = setInterval(() => { void this.poll(); }, POLL_INTERVAL_MS);
+    if (this.started) return;
+    this.started = true;
+    void this.pollAndSchedule();
   }
 
   getTasks(): CodexTask[] { return this.tasks; }
@@ -107,6 +136,10 @@ export class CodexMonitor implements vscode.Disposable {
   private async poll(): Promise<void> {
     if (this.polling) return;
     this.polling = true;
+    const metrics: PollMetrics = {
+      activeThreads: 0, recentThreads: 0, recentCacheHits: 0,
+      turnRequests: 0, turnReadFailures: 0, turnReadsInFlight: 0, maxConcurrentTurnReads: 0
+    };
     try {
       const folders = vscode.workspace.workspaceFolders?.map(folder => folder.uri.fsPath).filter(Boolean) ?? [];
       const params: Record<string, unknown> = {
@@ -123,32 +156,117 @@ export class CodexMonitor implements vscode.Disposable {
       const recentRows = rows
         .filter(row => row.status?.type !== 'active' && toTimestamp(row.updatedAt) >= now - RECENT_WINDOW_MS)
         .slice(0, RECENT_TASK_LIMIT);
-      const selected = [...activeRows, ...recentRows];
-      const tasks = await Promise.all(selected.map(row => this.readTask(row)));
-      const filtered = tasks.filter((task): task is CodexTask => task !== undefined);
+      metrics.activeThreads = activeRows.length;
+      metrics.recentThreads = recentRows.length;
+
+      const cachedTasks: CodexTask[] = [];
+      const rowsToRead: Array<{ row: ThreadRow; isActive: boolean }> = activeRows.map(row => ({ row, isActive: true }));
+      for (const row of recentRows) {
+        const cached = this.getCachedRecentTask(row);
+        if (cached) {
+          metrics.recentCacheHits++;
+          cachedTasks.push(cached);
+        } else {
+          rowsToRead.push({ row, isActive: false });
+        }
+      }
+
+      const readTasks = await mapWithConcurrency(rowsToRead, MAX_CONCURRENT_TURN_READS, async ({ row, isActive }) => {
+        metrics.turnRequests++;
+        metrics.turnReadsInFlight++;
+        metrics.maxConcurrentTurnReads = Math.max(metrics.maxConcurrentTurnReads, metrics.turnReadsInFlight);
+        try {
+          const result = await this.readTaskWithResult(row);
+          if (!result.turnReadSucceeded) metrics.turnReadFailures++;
+          if (result.task?.turnId && !isActive && result.turnReadSucceeded) this.cacheRecentTask(row, result.task);
+          return result.task;
+        } finally {
+          metrics.turnReadsInFlight--;
+        }
+      });
+      const filtered = [...cachedTasks, ...readTasks].filter((task): task is CodexTask => task !== undefined);
       filtered.sort((a, b) => {
         const activeDelta = Number(b.status === 'running' || b.status === 'waiting') - Number(a.status === 'running' || a.status === 'waiting');
         return activeDelta || b.updatedAt - a.updatedAt;
       });
 
       this.available = true;
+      this.failureCount = 0;
       this.lastSync = Date.now();
       this.reportConnectionState('connected');
       this.updateTasks(filtered);
+      this.reportPollMetrics(metrics, true);
     } catch {
       const connectionChanged = this.available;
       this.available = false;
+      this.failureCount++;
       this.reportConnectionState('unavailable');
       if (connectionChanged) this.onChange();
+      this.reportPollMetrics(metrics, false);
     } finally {
       this.polling = false;
     }
   }
 
+  private async pollAndSchedule(): Promise<void> {
+    if (!this.started) return;
+    await this.poll();
+    if (!this.started) return;
+    this.timer = setTimeout(() => {
+      this.timer = undefined;
+      void this.pollAndSchedule();
+    }, this.nextPollDelayMs());
+  }
+
+  private nextPollDelayMs(): number {
+    if (this.available) return POLL_INTERVAL_MS;
+    return Math.min(POLL_INTERVAL_MS * (2 ** Math.max(1, this.failureCount)), MAX_POLL_BACKOFF_MS);
+  }
+
+  private getCachedRecentTask(thread: ThreadRow): CodexTask | undefined {
+    const fingerprint = recentThreadFingerprint(thread);
+    if (!fingerprint) return undefined;
+    const cached = this.recentTaskCache.get(thread.id);
+    if (!cached || cached.fingerprint !== fingerprint) return undefined;
+    this.recentTaskCache.delete(thread.id);
+    this.recentTaskCache.set(thread.id, cached);
+    return cached.task;
+  }
+
+  private cacheRecentTask(thread: ThreadRow, task: CodexTask): void {
+    const fingerprint = recentThreadFingerprint(thread);
+    if (!fingerprint) return;
+    this.recentTaskCache.delete(thread.id);
+    this.recentTaskCache.set(thread.id, { fingerprint, task });
+    while (this.recentTaskCache.size > RECENT_TASK_CACHE_LIMIT) {
+      const oldestId = this.recentTaskCache.keys().next().value;
+      if (oldestId === undefined) break;
+      this.recentTaskCache.delete(oldestId);
+    }
+  }
+
+  private reportPollMetrics(metrics: PollMetrics, success: boolean): void {
+    this.lastPollMetrics = { ...metrics };
+    const snapshot = `${success}:${metrics.activeThreads}:${metrics.recentThreads}:${metrics.recentCacheHits}:${metrics.turnRequests}:${metrics.turnReadFailures}:${metrics.maxConcurrentTurnReads}`;
+    if (snapshot === this.lastPollMetricsSnapshot) return;
+    this.lastPollMetricsSnapshot = snapshot;
+    this.diagnostic(
+      `Codex poll ${success ? 'succeeded' : 'failed'}: threadList=1, active=${metrics.activeThreads}, ` +
+      `recent=${metrics.recentThreads}, recentCacheHits=${metrics.recentCacheHits}, ` +
+      `turnReads=${metrics.turnRequests}, turnReadFailures=${metrics.turnReadFailures}, ` +
+      `peakTurnConcurrency=${metrics.maxConcurrentTurnReads}.`
+    );
+  }
+
   private async readTask(thread: ThreadRow): Promise<CodexTask | undefined> {
-    if (!thread.id) return undefined;
+    return (await this.readTaskWithResult(thread)).task;
+  }
+
+  private async readTaskWithResult(thread: ThreadRow): Promise<TaskReadResult> {
+    if (!thread.id) return { turnReadSucceeded: false };
 
     let turn: TurnRow | undefined;
+    let turnReadSucceeded = false;
     try {
       const result = await this.client.request<ListResult<TurnRow>>('thread/turns/list', {
         threadId: thread.id,
@@ -157,6 +275,7 @@ export class CodexMonitor implements vscode.Disposable {
         itemsView: 'summary'
       });
       turn = result?.data?.[0];
+      turnReadSucceeded = true;
     } catch {
       // Keep the thread visible from its runtime status if turn history is unavailable.
     }
@@ -169,7 +288,7 @@ export class CodexMonitor implements vscode.Disposable {
     const endTime = toTimestamp(turn?.completedAt) || (status !== 'running' && status !== 'waiting' ? updatedAt : undefined);
     const name = thread.name?.trim() || thread.preview?.trim() || fallbackName(thread.source);
 
-    return {
+    return { turnReadSucceeded, task: {
       id: thread.id,
       turnId: turn?.id,
       name: name.slice(0, 140),
@@ -181,7 +300,7 @@ export class CodexMonitor implements vscode.Disposable {
       endTime,
       updatedAt,
       currentStep: currentStep(status, flags, turn)
-    };
+    } };
   }
 
   private async fetchRecentReply(threadId: string, turnId: string, cacheKey: string): Promise<string | undefined> {
@@ -269,9 +388,24 @@ export class CodexMonitor implements vscode.Disposable {
   }
 
   dispose(): void {
-    if (this.timer) clearInterval(this.timer);
+    this.started = false;
+    if (this.timer) clearTimeout(this.timer);
     this.client.dispose();
   }
+}
+
+async function mapWithConcurrency<T, R>(items: T[], limit: number, mapper: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(items.length, Math.max(1, limit));
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (true) {
+      const index = nextIndex++;
+      if (index >= items.length) return;
+      results[index] = await mapper(items[index], index);
+    }
+  }));
+  return results;
 }
 
 function taskStatus(runtimeStatus: string | undefined, turnStatus: string | undefined, flags: string[]): CodexTaskStatus {
@@ -326,6 +460,20 @@ function toTimestamp(value: number | string | undefined): number {
     return Number.isFinite(parsed) ? parsed : 0;
   }
   return 0;
+}
+
+function recentThreadFingerprint(thread: ThreadRow): string | undefined {
+  const updatedAt = toTimestamp(thread.updatedAt);
+  if (!thread.id || !updatedAt) return undefined;
+  return JSON.stringify([
+    updatedAt,
+    thread.status?.type,
+    [...(thread.status?.activeFlags ?? [])].sort(),
+    thread.name,
+    thread.preview,
+    thread.cwd,
+    thread.source
+  ]);
 }
 
 function fallbackName(source: string | undefined): string {

@@ -174,6 +174,135 @@ test('Codex polling only signals changed data or connection state', async () => 
   assert.equal(changes, 2);
 });
 
+test('Codex poll caches completed threads and limits concurrent turn reads', async () => {
+  const monitor = Object.create(CodexMonitor.prototype);
+  const now = Date.now();
+  const activeIds = new Set(Array.from({ length: 6 }, (_, index) => `active-${index}`));
+  const rows = [
+    ...[...activeIds].map(id => ({ id, updatedAt: now, source: 'cli', status: { type: 'active', activeFlags: [] } })),
+    ...['recent-1', 'recent-2'].map(id => ({ id, updatedAt: now - 60_000, source: 'cli', status: { type: 'idle', activeFlags: [] } }))
+  ];
+  let totalRequests = 0;
+  let inFlight = 0;
+  let observedPeak = 0;
+  monitor.polling = false;
+  monitor.available = false;
+  monitor.failureCount = 0;
+  monitor.tasks = [];
+  monitor.lastSnapshot = '';
+  monitor.lastConnectionState = undefined;
+  monitor.lastPollMetricsSnapshot = '';
+  monitor.recentTaskCache = new Map();
+  monitor.recentReplyCache = new Map();
+  monitor.notificationStates = new Map();
+  monitor.notifiedCodexTransitions = new Set();
+  monitor.notificationBaselineReady = false;
+  monitor.onChange = () => {};
+  monitor.diagnostic = () => {};
+  monitor.client = { request: async (method, params) => {
+    totalRequests++;
+    if (method === 'thread/list') return { data: rows };
+    inFlight++;
+    observedPeak = Math.max(observedPeak, inFlight);
+    await new Promise(resolve => setTimeout(resolve, 2));
+    inFlight--;
+    return { data: [{
+      id: `${params.threadId}-turn`, status: activeIds.has(params.threadId) ? 'inProgress' : 'completed',
+      startedAt: now - 1000, completedAt: activeIds.has(params.threadId) ? undefined : now
+    }] };
+  } };
+
+  const beforeFirstPoll = totalRequests;
+  await monitor.poll();
+  const firstPollRequests = totalRequests - beforeFirstPoll;
+  assert.equal(firstPollRequests, 9); // 1 thread list + 8 uncached turn reads.
+  assert.equal(observedPeak, 4);
+
+  const beforeSecondPoll = totalRequests;
+  await monitor.poll();
+  const secondPollRequests = totalRequests - beforeSecondPoll;
+  assert.equal(secondPollRequests, 7); // 1 thread list + 6 active turn reads; recent rows came from cache.
+  assert.equal(monitor.lastPollMetrics.recentCacheHits, 2);
+  assert.equal(monitor.lastPollMetrics.turnRequests, 6);
+  assert.ok(monitor.lastPollMetrics.maxConcurrentTurnReads <= 4);
+});
+
+test('Codex recent-task cache does not hide a new turn in the same thread', async () => {
+  const monitor = Object.create(CodexMonitor.prototype);
+  const now = Date.now();
+  let thread = { id: 'same-thread', updatedAt: now, source: 'cli', status: { type: 'idle', activeFlags: [] } };
+  let turn = { id: 'turn-1', status: 'completed', startedAt: now - 2000, completedAt: now };
+  let turnReads = 0;
+  monitor.polling = false;
+  monitor.available = false;
+  monitor.failureCount = 0;
+  monitor.tasks = [];
+  monitor.lastSnapshot = '';
+  monitor.lastConnectionState = undefined;
+  monitor.lastPollMetricsSnapshot = '';
+  monitor.recentTaskCache = new Map();
+  monitor.recentReplyCache = new Map();
+  monitor.notificationStates = new Map();
+  monitor.notifiedCodexTransitions = new Set();
+  monitor.notificationBaselineReady = false;
+  monitor.onChange = () => {};
+  monitor.diagnostic = () => {};
+  monitor.client = { request: async method => {
+    if (method === 'thread/list') return { data: [thread] };
+    turnReads++;
+    return { data: [turn] };
+  } };
+
+  await monitor.poll();
+  assert.equal(monitor.getTasks()[0].turnId, 'turn-1');
+  await monitor.poll();
+  assert.equal(turnReads, 1); // unchanged completed turn reused
+
+  thread = { ...thread, updatedAt: now + 1000, status: { type: 'active', activeFlags: [] } };
+  turn = { id: 'turn-2', status: 'inProgress', startedAt: now + 1000 };
+  await monitor.poll();
+  assert.equal(turnReads, 2);
+  assert.equal(monitor.getTasks()[0].turnId, 'turn-2');
+  assert.equal(monitor.getTasks()[0].status, 'running');
+
+  thread = { ...thread, updatedAt: now + 2000, status: { type: 'idle', activeFlags: [] } };
+  turn = { id: 'turn-3', status: 'completed', startedAt: now + 1500, completedAt: now + 2000 };
+  await monitor.poll();
+  assert.equal(turnReads, 3);
+  assert.equal(monitor.getTasks()[0].turnId, 'turn-3');
+  assert.equal(monitor.getTasks()[0].status, 'completed');
+});
+
+test('Codex connection retry backs off and resets after recovery', async () => {
+  const monitor = Object.create(CodexMonitor.prototype);
+  monitor.polling = false;
+  monitor.available = false;
+  monitor.failureCount = 0;
+  monitor.tasks = [];
+  monitor.lastSnapshot = '';
+  monitor.lastConnectionState = undefined;
+  monitor.lastPollMetricsSnapshot = '';
+  monitor.recentTaskCache = new Map();
+  monitor.recentReplyCache = new Map();
+  monitor.notificationStates = new Map();
+  monitor.notifiedCodexTransitions = new Set();
+  monitor.notificationBaselineReady = false;
+  monitor.onChange = () => {};
+  monitor.diagnostic = () => {};
+  monitor.client = { request: async () => { throw new Error('offline'); } };
+
+  await monitor.poll();
+  assert.equal(monitor.nextPollDelayMs(), 6000);
+  await monitor.poll();
+  assert.equal(monitor.nextPollDelayMs(), 12_000);
+
+  monitor.client = { request: async () => ({ data: [] }) };
+  await monitor.poll();
+  assert.equal(monitor.isAvailable(), true);
+  assert.equal(monitor.failureCount, 0);
+  assert.equal(monitor.nextPollDelayMs(), 3000);
+});
+
 test('temporary disconnection retains tasks and recovery updates state', async () => {
   const p = Object.create(CodexMonitor.prototype);
   p.polling = false; p.available = true; p.tasks = [{ id:'old' }]; p.recentReplyCache = new Map(); p.recentReplyRequests = new Map(); p.notificationStates = new Map(); p.notifiedCodexTransitions = new Set(); p.notificationBaselineReady = false; p.diagnostic=()=>{}; p.onChange=()=>{};
