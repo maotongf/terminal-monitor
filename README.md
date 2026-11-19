@@ -11,6 +11,7 @@ A compact VS Code extension for monitoring Codex tasks and integrated terminal c
 - Keeps interface text in one Chinese copy file, colors task states by meaning, and shows five recent tasks before offering more.
 - Lets you collapse the Codex, Active terminals, Idle terminals, and Recent groups.
 - Click a Codex task to focus its matched terminal, including after the task finishes. Hover shows whether the match came from a manual choice, title and folder, a related CLI task, or recent terminal activity.
+- Removes a Codex turn from the dashboard when its linked terminal closes; a later turn in that session appears again.
 - Displays Active, Quiet, Idle, Completed, Failed, and Unknown states.
 - Captures a small rolling window of recent command output.
 - Shows compact hover cards: Codex status, current step, duration and update time come from the App Server; terminal cards show only the last three nonempty output lines or the command. Empty fields are hidden.
@@ -53,7 +54,7 @@ npx vsce package
 Install the generated `.vsix` in VS Code using **Extensions → Install from VSIX...**, then click the Terminal Monitor icon in the Activity Bar. To install from a terminal, pass the generated file to:
 
 ```bash
-code --install-extension terminal-monitor-1.11.0.vsix
+code --install-extension terminal-monitor-1.12.0.vsix
 ```
 
 For Remote SSH, install the extension in the remote extension host to monitor remote terminals. Codex status also requires the Codex App Server socket to be available on that remote host.

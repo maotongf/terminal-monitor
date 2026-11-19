@@ -140,7 +140,7 @@ function codexNode(task, el) {
   const subtitle = [displayCodexStep(task), task.cwd ? shortPath(task.cwd) : ''].filter(Boolean).join(' · ') || sourceLabel(task.source);
   el.innerHTML = '<div class="icon">✳</div><div class="main"><div class="top"><span class="name">' + esc(task.name || 'Codex') + '</span></div><div class="sub codexStep">' + esc(subtitle) + '</div></div><div class="right"><span class="status ' + esc(stateClass) + '">' + label(task.status, task) + '</span><span class="duration" data-counting="' + (task.status === 'running' || task.status === 'waiting' ? 'true' : 'false') + '" data-start="' + task.startTime + '" data-end="' + (task.endTime || '') + '">' + duration(task) + '</span></div>';
   if (isNew) {
-    el.addEventListener('click', () => { const t=el._task; vscode.postMessage({ type: 'focusCodexTask', terminalId: t.terminalId, source: t.source, cwd: t.cwd, name: t.name, status: t.status }); });
+    el.addEventListener('click', () => { const t=el._task; vscode.postMessage({ type: 'focusCodexTask', taskId: t.id, terminalId: t.terminalId, source: t.source, cwd: t.cwd, name: t.name, status: t.status }); });
     el.addEventListener('keydown', event => activateByKeyboard(event, el));
     el.addEventListener('contextmenu', event => { event.preventDefault(); vscode.postMessage({ type: 'bindCodexTerminal', taskId: el._task.id }); });
     attachTooltip(el);

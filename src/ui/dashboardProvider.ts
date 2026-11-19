@@ -12,6 +12,8 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
   private terminalOrder = new Map<string, number>();
   private terminalActivity = new Map<string, number>();
   private readonly codexTerminalBindings = new Map<string, { id: string; confidence: number; reason: CodexTerminalBindingReason }>();
+  private closedCodexTaskTurns = new Map<string, string>();
+  private knownTerminalIds: Set<string>;
   private readonly historyFallbackTerminals = new Map<string, vscode.Terminal>();
   private activeTerminalSubscription: vscode.Disposable;
   private lastPostedStateSnapshot = '';
@@ -24,7 +26,11 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
     private readonly codex: CodexMonitor,
     private readonly diagnostic: (message: string) => void = () => undefined
   ) {
-    this.changeSubscription = tasks.onDidChange(() => this.schedulePostState());
+    this.knownTerminalIds = new Set(tasks.getTerminals().map(terminal => terminal.id));
+    this.changeSubscription = tasks.onDidChange(() => {
+      this.captureClosedTerminalTasks();
+      this.schedulePostState();
+    });
     this.recordActiveTerminal(vscode.window.activeTerminal);
     this.activeTerminalSubscription = vscode.window.onDidChangeActiveTerminal(terminal => this.recordActiveTerminal(terminal));
   }
@@ -91,12 +97,16 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
 
   private postState(): void {
     const codexSnapshot = this.codex.getTasks();
+    this.closedCodexTaskTurns ??= new Map();
+    this.pruneClosedCodexTaskTurns(codexSnapshot);
     this.pruneStaleMappings(codexSnapshot);
     const view = this.view;
     if (!view || view.visible === false) return;
     const terminals = this.tasks.getTerminals();
     terminals.forEach((terminal, index) => this.terminalOrder.set(terminal.id, index));
-    const codexTasks: CodexTask[] = codexSnapshot.map(task => this.bindCodexTask(task));
+    const codexTasks: CodexTask[] = codexSnapshot
+      .filter(task => !this.closedCodexTaskTurns.has(task.id))
+      .map(task => this.bindCodexTask(task));
     const trackedCliTerminals = new Set(codexTasks
       .filter(task => task.source === 'cli' && (task.status === 'running' || task.status === 'waiting') && task.terminalId &&
         (this.codexTerminalBindings.get(task.id)?.confidence ?? 0) >= 2)
@@ -205,6 +215,30 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
     }
   }
 
+  private captureClosedTerminalTasks(): void {
+    const liveTerminalIds = new Set(this.tasks.getTerminals().map(terminal => terminal.id));
+    const closedTerminalIds = new Set([...this.knownTerminalIds].filter(id => !liveTerminalIds.has(id)));
+    if (closedTerminalIds.size) {
+      const codexTasks = new Map(this.codex.getTasks().map(task => [task.id, task] as const));
+      for (const [taskId, binding] of this.codexTerminalBindings) {
+        if (!closedTerminalIds.has(binding.id)) continue;
+        const task = codexTasks.get(taskId);
+        if (!task) continue;
+        this.closedCodexTaskTurns.set(taskId, task.turnId ?? '');
+        this.diagnostic(`Codex task hidden after its linked terminal closed: ${taskId.slice(0, 8)}.`);
+      }
+    }
+    this.knownTerminalIds = liveTerminalIds;
+  }
+
+  private pruneClosedCodexTaskTurns(codexTasks: CodexTask[]): void {
+    const currentTasks = new Map(codexTasks.map(task => [task.id, task] as const));
+    for (const [taskId, closedTurnId] of this.closedCodexTaskTurns) {
+      const task = currentTasks.get(taskId);
+      if (!task || (task.turnId ?? '') !== closedTurnId) this.closedCodexTaskTurns.delete(taskId);
+    }
+  }
+
   private bindCodexTask(task: CodexTask): CodexTask {
     const binding = this.codexTerminalBindings.get(task.id);
     if (binding && !this.tasks.getTerminalById(binding.id)) this.codexTerminalBindings.delete(task.id);
@@ -259,6 +293,9 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
   }
 
   private async focusCodexTask(message: Record<string, unknown>): Promise<void> {
+    const taskId = typeof message.taskId === 'string' ? message.taskId : undefined;
+    if (taskId && this.closedCodexTaskTurns.has(taskId)) return;
+
     const directId = typeof message.terminalId === 'string' ? message.terminalId : undefined;
     const direct = directId ? this.tasks.getTerminalById(directId) : undefined;
     if (direct) {

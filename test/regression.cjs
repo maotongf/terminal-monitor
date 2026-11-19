@@ -95,6 +95,45 @@ test('postState prunes terminal and Codex bindings that are no longer live', () 
   assert.deepEqual([...p.codexTerminalBindings.keys()], ['current']);
 });
 
+test('closing a linked terminal hides its Codex turn until a new turn starts', () => {
+  const terminal = { id: 'terminal-1', name: 'Codex', cwd: '/project', terminal: {}, createdAt: 1, shellIntegrationAvailable: true };
+  let terminals = [terminal];
+  let turnId = 'turn-1';
+  let state;
+  const p = Object.create(DashboardProvider.prototype);
+  p.tasks = {
+    getTerminals: () => terminals,
+    getTerminalById: id => terminals.find(item => item.id === id),
+    getActiveTasks: () => [],
+    getHistory: () => []
+  };
+  p.codex = {
+    getTasks: () => [{ id: 'thread-1', turnId, name: 'Codex', cwd: '/project', source: 'cli', status: 'completed', startTime: 1, updatedAt: 2 }],
+    isAvailable: () => true,
+    getLastSync: () => 2
+  };
+  p.codexTerminalBindings = new Map([['thread-1', { id: terminal.id, confidence: 3, reason: 'manual' }]]);
+  p.knownTerminalIds = new Set([terminal.id]);
+  p.historyFallbackTerminals = new Map();
+  p.terminalActivity = new Map();
+  p.terminalOrder = new Map();
+  p.diagnostic = () => {};
+  p.view = { visible: true, webview: { postMessage: message => { state = message; return Promise.resolve(true); } } };
+
+  p.postState();
+  assert.equal(state.codex.length, 1);
+  terminals = [];
+  p.captureClosedTerminalTasks();
+  p.postState();
+  assert.equal(state.codex.length, 0);
+  assert.equal(p.closedCodexTaskTurns.get('thread-1'), 'turn-1');
+
+  turnId = 'turn-2';
+  p.postState();
+  assert.equal(state.codex.length, 1);
+  assert.equal(p.closedCodexTaskTurns.has('thread-1'), false);
+});
+
 test('closed history tasks explain and reuse their fallback terminal', () => {
   const task = { id: 'task-1', terminalId: 'closed', name: 'Build', cwd: '/workspace/project', status: 'completed', startTime: 1, recentOutput: [] };
   const oldTerminals = vscode.window.terminals;
