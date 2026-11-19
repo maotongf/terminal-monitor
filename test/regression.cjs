@@ -404,6 +404,8 @@ test('Codex connection retry backs off and resets after recovery', async () => {
   await monitor.poll();
   assert.equal(monitor.isAvailable(), true);
   assert.equal(monitor.failureCount, 0);
+  assert.equal(monitor.nextPollDelayMs(), 10_000);
+  monitor.tasks = [{ status: 'running' }];
   assert.equal(monitor.nextPollDelayMs(), 3000);
 });
 

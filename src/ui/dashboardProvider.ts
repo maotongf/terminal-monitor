@@ -88,7 +88,7 @@ export class DashboardProvider implements vscode.WebviewViewProvider, vscode.Dis
   private schedulePostState(): void {
     if (!this.view || !this.view.visible) return;
     if (this.renderTimer) return;
-    this.renderTimer = setTimeout(() => { this.renderTimer = undefined; this.postState(); }, 300);
+    this.renderTimer = setTimeout(() => { this.renderTimer = undefined; this.postState(); }, 500);
   }
 
   private syncTerminalNames(): void {

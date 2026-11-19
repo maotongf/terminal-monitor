@@ -397,7 +397,7 @@ document.querySelectorAll('[data-section-toggle]').forEach(button => {
 $('historyMore').addEventListener('click', () => { showAllHistory = !showAllHistory; render(); });
 $('tooltip').addEventListener('mouseenter', () => { clearTimeout(hideTimer); hideTimer = null; });
 $('tooltip').addEventListener('mouseleave', scheduleHideTooltip);
-setInterval(() => {
+function updateVisibleTimes() {
   document.querySelectorAll('.duration[data-start][data-counting="true"]').forEach(element => {
     const start = Number(element.dataset.start);
     if (!start) { element.textContent = ''; return; }
@@ -419,5 +419,17 @@ setInterval(() => {
   });
   document.querySelectorAll('.tipUpdated[data-updated]').forEach(element => { element.textContent=timeAgo(Number(element.dataset.updated)); });
   updateConnectionStatus();
-}, 1000);
+}
+let clockTimer;
+function syncClock() {
+  if (document.hidden) {
+    if (clockTimer) clearInterval(clockTimer);
+    clockTimer = undefined;
+    return;
+  }
+  updateVisibleTimes();
+  if (!clockTimer) clockTimer = setInterval(updateVisibleTimes, 1000);
+}
+document.addEventListener('visibilitychange', syncClock);
+syncClock();
 vscode.postMessage({ type: 'ready' });

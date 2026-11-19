@@ -44,6 +44,7 @@ interface ListResult<T> {
 }
 
 const POLL_INTERVAL_MS = 3000;
+const IDLE_POLL_INTERVAL_MS = 10_000;
 const MAX_POLL_BACKOFF_MS = 60_000;
 const MAX_CONCURRENT_TURN_READS = 4;
 const RECENT_TASK_CACHE_LIMIT = 100;
@@ -252,7 +253,8 @@ export class CodexMonitor implements vscode.Disposable {
   }
 
   private nextPollDelayMs(): number {
-    if (this.available) return POLL_INTERVAL_MS;
+    if (this.available) return this.tasks.some(task => task.status === 'running' || task.status === 'waiting')
+      ? POLL_INTERVAL_MS : IDLE_POLL_INTERVAL_MS;
     return Math.min(POLL_INTERVAL_MS * (2 ** Math.max(1, this.failureCount)), MAX_POLL_BACKOFF_MS);
   }
 

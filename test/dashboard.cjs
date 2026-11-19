@@ -26,7 +26,7 @@ test('dashboard counts, keyed rows, keyboard activation and collapse state', () 
   const els=Object.fromEntries(ids.map(id=>[id,new Element(id)]));
   const sections=['codex','active','idle','history'].map(id=>{const e=new Element(id);e.dataset.sectionToggle=id;e.listeners={};e.querySelector=()=>new Element('chevron');return e;});
   const winEvents={}; const messages=[]; const saved={};
-  const document={getElementById:id=>els[id],createElement:()=>new Element(),querySelectorAll:q=>q==='[data-section-toggle]'?sections:q==='.task'?['codex','active','idle','history'].flatMap(id=>els[id].children):[],querySelector:q=>q==='.task:hover'?null:q.startsWith('[data-section-toggle=')?sections.find(x=>q.includes(x.dataset.sectionToggle)):null};
+  const document={hidden:false,addEventListener(){},getElementById:id=>els[id],createElement:()=>new Element(),querySelectorAll:q=>q==='[data-section-toggle]'?sections:q==='.task'?['codex','active','idle','history'].flatMap(id=>els[id].children):[],querySelector:q=>q==='.task:hover'?null:q.startsWith('[data-section-toggle=')?sections.find(x=>q.includes(x.dataset.sectionToggle)):null};
   const context={acquireVsCodeApi:()=>({postMessage:m=>messages.push(m),getState:()=>saved.value,setState:v=>saved.value=v}),document,window:{innerWidth:400,innerHeight:600,addEventListener:(t,f)=>winEvents[t]=f},setInterval:()=>1,clearInterval(){},setTimeout:()=>1,clearTimeout(){},Date,console};
   vm.createContext(context); vm.runInContext(fs.readFileSync('resources/copy.zh-CN.js','utf8'),context); vm.runInContext(fs.readFileSync('resources/dashboard.js','utf8'),context);
   const failedAt=Date.now();
@@ -56,7 +56,7 @@ test('Codex hover shows escaped final reply and requests missing reply on demand
   const els=Object.fromEntries(ids.map(id=>[id,new Element(id)]));
   const sections=['codex','active','idle','history'].map(id=>{const e=new Element(id);e.dataset.sectionToggle=id;e.listeners={};e.querySelector=()=>new Element('chevron');return e;});
   const winEvents={}; const messages=[];
-  const document={getElementById:id=>els[id],createElement:()=>new Element(),querySelectorAll:q=>q==='[data-section-toggle]'?sections:q==='.task'?['codex','active','idle','history'].flatMap(id=>els[id].children):[],querySelector:q=>q==='.task:hover'?null:q.startsWith('[data-section-toggle=')?sections.find(x=>q.includes(x.dataset.sectionToggle)):null};
+  const document={hidden:false,addEventListener(){},getElementById:id=>els[id],createElement:()=>new Element(),querySelectorAll:q=>q==='[data-section-toggle]'?sections:q==='.task'?['codex','active','idle','history'].flatMap(id=>els[id].children):[],querySelector:q=>q==='.task:hover'?null:q.startsWith('[data-section-toggle=')?sections.find(x=>q.includes(x.dataset.sectionToggle)):null};
   const context={acquireVsCodeApi:()=>({postMessage:m=>messages.push(m),getState:()=>({}),setState(){}}),document,window:{innerWidth:400,innerHeight:600,addEventListener:(t,f)=>winEvents[t]=f},setInterval:()=>1,clearInterval(){},setTimeout:()=>1,clearTimeout(){},Date,console};
   vm.createContext(context); vm.runInContext(fs.readFileSync('resources/copy.zh-CN.js','utf8'),context); vm.runInContext(fs.readFileSync('resources/dashboard.js','utf8'),context);
   winEvents.message({data:{type:'state',codexAvailable:true,codexLastSync:Date.now(),codex:[

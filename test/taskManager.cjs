@@ -58,3 +58,20 @@ test('historyLimit consistently retains zero, five, ten and one hundred complete
   }
   historyLimit = 10;
 });
+
+test('large output is bounded and the final lines are saved when a task finishes', () => {
+  const manager = Object.create(TaskManager.prototype);
+  manager.terminals = new Map();
+  manager.tasks = new Map([['task', { id: 'task', terminalId: 'terminal', status: 'running', startTime: 1, recentOutput: [] }]]);
+  manager.history = [];
+  manager.outputStreams = new Map();
+  manager.pendingOutputs = new Map();
+  manager.changeEmitter = { fire() {} };
+
+  manager.appendOutput('task', 'x'.repeat(5_000_000) + '\nfinal line\n');
+  assert.equal(manager.tasks.get('task').recentOutput.length, 0);
+  assert.ok(manager.pendingOutputs.get('task').text.length <= 32_000);
+  manager.finishTask('task', 0);
+  assert.equal(manager.getHistory()[0].recentOutput.at(-1), 'final line');
+  assert.equal(manager.pendingOutputs.size, 0);
+});

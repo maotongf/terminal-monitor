@@ -4,12 +4,16 @@ import { Task, TerminalInfo, TaskStatus } from './types';
 import { detectTaskKind, displayNameForKind } from '../agents/agentDetector';
 import { TerminalOutputStream } from '../utils/terminalOutputStream';
 
+const OUTPUT_FLUSH_MS = 100;
+const MAX_PENDING_OUTPUT_CHARS = 32_000;
+
 export class TaskManager {
   private terminals = new Map<string, TerminalInfo>();
   private terminalIds = new WeakMap<vscode.Terminal, string>();
   private tasks = new Map<string, Task>();
   private history: Task[] = [];
   private outputStreams = new Map<string, TerminalOutputStream>();
+  private pendingOutputs = new Map<string, { text: string; skipped: boolean; timer: ReturnType<typeof setTimeout> }>();
   private readonly changeEmitter = new vscode.EventEmitter<void>();
   readonly onDidChange = this.changeEmitter.event;
 
@@ -74,13 +78,38 @@ export class TaskManager {
   appendOutput(taskId: string, chunk: string): void {
     const task = this.tasks.get(taskId);
     if (!task) return;
-    const lineLimit = vscode.workspace.getConfiguration('terminalMonitor').get<number>('outputLineLimit', 5);
+    const pending = this.pendingOutputs.get(taskId);
+    const tail = chunk.slice(-MAX_PENDING_OUTPUT_CHARS);
+    const combined = (pending?.text ?? '') + tail;
+    const skipped = (pending?.skipped ?? false) || chunk.length > MAX_PENDING_OUTPUT_CHARS || combined.length > MAX_PENDING_OUTPUT_CHARS;
+    if (pending) {
+      pending.text = combined.slice(-MAX_PENDING_OUTPUT_CHARS);
+      pending.skipped = skipped;
+    } else {
+      const timer = setTimeout(() => this.flushPendingOutput(taskId), OUTPUT_FLUSH_MS);
+      this.pendingOutputs.set(taskId, { text: combined, skipped, timer });
+    }
+    task.lastOutputTime = Date.now();
+    if (task.status === 'quiet') {
+      task.status = 'running';
+      this.changeEmitter.fire();
+    }
+  }
+
+  private flushPendingOutput(taskId: string, notify = true): void {
+    const pendingOutputs = this.pendingOutputs;
+    const pending = pendingOutputs?.get(taskId);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    pendingOutputs.delete(taskId);
+    const task = this.tasks.get(taskId);
+    if (!task) return;
     let stream = this.outputStreams.get(taskId);
     if (!stream) { stream = new TerminalOutputStream(); this.outputStreams.set(taskId, stream); }
-    task.recentOutput = stream.push(chunk, lineLimit);
-    task.lastOutputTime = Date.now();
-    if (task.status === 'quiet') task.status = 'running';
-    this.changeEmitter.fire();
+    if (pending.skipped) stream.resetPartialLine();
+    const lineLimit = vscode.workspace.getConfiguration('terminalMonitor').get<number>('outputLineLimit', 5);
+    task.recentOutput = stream.push(pending.text, lineLimit);
+    if (notify) this.changeEmitter.fire();
   }
 
   updateQuietStates(): void {
@@ -99,6 +128,7 @@ export class TaskManager {
   finishTask(taskId: string, exitCode?: number, forcedStatus?: TaskStatus): Task | undefined {
     const task = this.tasks.get(taskId);
     if (!task) return undefined;
+    this.flushPendingOutput(taskId, false);
     const outputStream = this.outputStreams.get(taskId);
     if (outputStream) {
       const lineLimit = vscode.workspace.getConfiguration('terminalMonitor').get<number>('outputLineLimit', 5);
@@ -146,5 +176,9 @@ export class TaskManager {
   getTerminalById(id: string): TerminalInfo | undefined { return this.terminals.get(id); }
   getTerminals(): TerminalInfo[] { return [...this.terminals.values()]; }
 
-  dispose(): void { this.changeEmitter.dispose(); }
+  dispose(): void {
+    for (const pending of this.pendingOutputs.values()) clearTimeout(pending.timer);
+    this.pendingOutputs.clear();
+    this.changeEmitter.dispose();
+  }
 }

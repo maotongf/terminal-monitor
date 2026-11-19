@@ -54,7 +54,9 @@ export class TerminalWatcher implements vscode.Disposable {
 
     this.output.appendLine(`Watcher started in ${vscode.env.remoteName ?? 'local'} extension host.`);
     this.syncTerminals('startup');
-    this.syncTimer = setInterval(() => this.syncTerminals('poll'), 1000);
+    // Open/close and shell events handle normal changes; this only repairs missed events
+    // and picks up terminal renames, which VS Code does not expose as an event.
+    this.syncTimer = setInterval(() => this.syncTerminals('poll'), 10_000);
   }
 
   refresh(): number {

@@ -15,6 +15,11 @@ export class TerminalOutputStream {
     return this.snapshot(limit);
   }
 
+  resetPartialLine(): void {
+    this.escapeState = 'text';
+    this.currentLine = '';
+  }
+
   snapshot(limit: number): string[] {
     const count = Math.max(1, limit);
     const completed = this.lines.slice(-count);

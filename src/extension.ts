@@ -41,11 +41,10 @@ export function activate(context: vscode.ExtensionContext): void {
     { dispose: () => watcher.dispose() },
     { dispose: () => codexMonitor.dispose() },
     { dispose: () => dashboard.dispose() },
-    { dispose: () => taskManager.dispose() },
-    new vscode.Disposable(() => undefined)
+    { dispose: () => taskManager.dispose() }
   );
 
-  const quietTimer = setInterval(() => taskManager.updateQuietStates(), 1000);
+  const quietTimer = setInterval(() => taskManager.updateQuietStates(), 2000);
   context.subscriptions.push(new vscode.Disposable(() => clearInterval(quietTimer)));
 }
 
